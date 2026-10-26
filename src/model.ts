@@ -4,6 +4,8 @@ import { TextEdit } from './parse';
 export type ThreadSource = 'gitlab' | 'self';
 
 export interface CrNote {
+  id?: number;
+  authorId?: number;
   author: string;
   avatarUrl?: string;
   body: string;
@@ -30,6 +32,10 @@ export interface FixSuggestion {
 export class CrThread {
   suggestion?: FixSuggestion;
   draftReply?: string;
+  /** Set when the user applied or discarded the fix, so the automatic run and Fix All do not make it again. */
+  skipAutoFix = false;
+  /** Set when the user discarded the reply draft. */
+  skipAutoReply = false;
   vsThread?: vscode.CommentThread;
 
   constructor(
@@ -51,6 +57,11 @@ export class CrThread {
     const line = first.split('\n').find((l) => l.trim()) ?? '';
     // Plain text for the sidebar: remove the most common markdown marks.
     return line.replace(/\*\*|__|`/g, '').trim().slice(0, 120) || '(empty)';
+  }
+
+  /** Changes when a new note is added, so cached suggestions for older conversations are not reused. */
+  get cacheKey(): string {
+    return `${this.id}:${this.notes[this.notes.length - 1]?.id ?? this.notes.length}`;
   }
 
   get location(): string {

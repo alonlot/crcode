@@ -21,9 +21,31 @@ Self review findings show the same way, with the label "Self review" and the sev
 | **Apply Fix** ✓ | Suggestion comment, thread title, view item | Applies the suggested change to the file (you review and save). If the file changed after the suggestion, the extension finds the original code again; if it cannot, it tells you to ask for a new suggestion. |
 | **Reply** | Reply box under each thread, view item | Posts your reply to the GitLab discussion. |
 | **Suggest Reply (opencode)** ✨ | Thread title, view item | opencode writes a reply draft. Use **Edit**, **Send** or **Discard** on the draft. |
-| **Fix All CR Notes** 🪄 | GitLab CR view title | Makes fixes for all open notes of the merge request (several in parallel), then applies them in one edit. Fixes that overlap are not applied; the log shows them. |
+| **Fix All CR Notes** 🪄 | GitLab CR view title | Makes fixes for all open notes of the merge request (several in parallel) and uses the fixes that are already ready. Then it applies them in one edit. It skips notes whose fix you already applied or discarded. Fixes that overlap are not applied; the log shows them. |
 | **Self Code Review** ☑ | GitLab CR view title | Sends your diff (merge base of the target branch to the working tree, including uncommitted changes) to opencode for a review. Findings show as threads. On each finding you can **Suggest Fix**, **Apply Fix**, **Post to Merge Request** or **Dismiss**. |
 | **Resolve / Unresolve** | Thread title, view item context menu | Resolves the GitLab discussion. |
+
+## Automatic mode
+
+The extension works without a click in these cases:
+
+1. **When VS Code opens** (if a token is saved), it loads the merge request of the current branch.
+2. **When you check out another branch**, it loads the merge request of that branch. A commit on the same branch does not reload it.
+3. **After each load**, opencode makes these in the background (status bar: "opencode: preparing CR suggestions"):
+   - a suggested fix for each open note on a code line,
+   - a reply draft for each open note.
+   When it is done, a message tells you how many fixes and drafts are ready.
+
+Nothing goes to your files or to GitLab until you click **Apply Fix** or **Send Reply**.
+
+The automatic run skips a note when:
+- it already has a suggestion,
+- you wrote the last reply in the discussion,
+- you already applied or discarded its fix (or discarded its draft).
+
+Results are kept per workspace. Thus a restart or a switch back to a branch does not ask opencode again. When a reviewer adds a new reply to a discussion, that discussion gets new suggestions.
+
+**Cost:** each new note can use two opencode requests (one fix, one reply). On a large merge request, set `gitlabCr.auto.suggestFixes` or `gitlabCr.auto.suggestReplies` to `false` if you do not want this.
 
 ## Requirements
 
@@ -57,7 +79,10 @@ The extension reads the GitLab URL and project path from the remote. Set them yo
 | `gitlabCr.opencode.model` | (opencode default) | `provider/model`, for example `anthropic/<model-id>`. |
 | `gitlabCr.opencode.agent` | `plan` | The `plan` agent can read the repository but cannot edit it. The extension makes the edits itself, only after you click **Apply**. |
 | `gitlabCr.opencode.timeoutSeconds` | `300` | Limit for one request. |
-| `gitlabCr.fixAll.concurrency` | `2` | Parallel requests for **Fix All**. |
+| `gitlabCr.auto.refreshOnBranchChange` | `true` | Load the merge request of the new branch after a checkout. |
+| `gitlabCr.auto.suggestFixes` | `true` | Make fix suggestions in the background after each load. |
+| `gitlabCr.auto.suggestReplies` | `true` | Make reply drafts in the background after each load. |
+| `gitlabCr.fixAll.concurrency` | `2` | Parallel opencode requests (Fix All and automatic mode). |
 | `gitlabCr.fixAll.confirm` | `true` | Ask before **Fix All** applies the fixes. |
 | `gitlabCr.selfReview.baseBranch` | (MR target, or `main`) | Branch for the self review diff. |
 | `gitlabCr.selfReview.maxDiffKb` | `200` | Larger diffs are truncated. |

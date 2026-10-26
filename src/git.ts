@@ -20,6 +20,10 @@ export async function currentBranch(root: string): Promise<string> {
   return (await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 }
 
+export async function gitDir(root: string): Promise<string> {
+  return (await git(root, ['rev-parse', '--absolute-git-dir'])).trim();
+}
+
 export async function remoteUrl(root: string, remote: string): Promise<string> {
   return (await git(root, ['remote', 'get-url', remote])).trim();
 }

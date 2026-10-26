@@ -74,12 +74,27 @@
           "minimum": 10,
           "description": "Maximum time for one opencode request."
         },
+        "gitlabCr.auto.refreshOnBranchChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "Load the merge request of the new branch when you check out another branch."
+        },
+        "gitlabCr.auto.suggestFixes": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "After the notes load (when VS Code opens, when the branch changes, or on Refresh), ask opencode in the background for a fix for each open note on a code line. Nothing is applied until you click **Apply Fix**. Each note costs one opencode request; results are cached, so a note is not sent again until someone adds a new reply to it."
+        },
+        "gitlabCr.auto.suggestReplies": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "After the notes load, ask opencode in the background for a reply draft for each open note. Nothing is sent until you click **Send Reply**. Notes where you wrote the last reply are skipped."
+        },
         "gitlabCr.fixAll.concurrency": {
           "type": "number",
           "default": 2,
           "minimum": 1,
           "maximum": 8,
-          "description": "Number of opencode requests that can run at the same time during 'Fix All CR Notes'."
+          "description": "Number of opencode requests that can run at the same time (Fix All CR Notes and the automatic suggestions)."
         },
         "gitlabCr.fixAll.confirm": {
           "type": "boolean",

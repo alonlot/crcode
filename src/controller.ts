@@ -4,27 +4,45 @@ import * as vscode from 'vscode';
 import { CommentManager, CrComment } from './comments';
 import { applyGrouped, prepareEdit, resolveInRoot } from './edits';
 import * as git from './git';
-import { Discussion, GitLabClient, MergeRequest } from './gitlab';
-import { CrThread } from './model';
+import { Discussion, GitLabClient, GitLabUser, MergeRequest } from './gitlab';
+import { CrThread, FixSuggestion } from './model';
 import { OpencodeRunner } from './opencode';
 import { numberLines, validateFixAnswer } from './parse';
 import { fixPrompt, replyPrompt, selfReviewPrompt } from './prompts';
 import { ThreadTree } from './tree';
 
 const TOKEN_KEY = 'gitlabCr.token';
+const CACHE_KEY = 'gitlabCr.suggestionCache';
+const CACHE_DAYS = 14;
 const CONTEXT_LINES = 40;
+
+interface CacheEntry {
+  at: number;
+  suggestion?: FixSuggestion;
+  draftReply?: string;
+  skipAutoFix?: boolean;
+  skipAutoReply?: boolean;
+}
 
 interface Session {
   root: string;
   project: string;
   baseUrl: string;
   client: GitLabClient;
+  me?: GitLabUser;
   mr?: MergeRequest;
 }
 
 export class Controller implements vscode.Disposable {
   private session?: Session;
   private refreshing?: Promise<void>;
+  private refreshQueued?: Promise<void>;
+  private branch?: string;
+  private watchedGitDir?: string;
+  private headWatcher?: vscode.FileSystemWatcher;
+  private branchTimer?: NodeJS.Timeout;
+  private autoRun?: vscode.CancellationTokenSource;
+  private me?: { baseUrl: string; user: GitLabUser };
   private gitlabThreads: CrThread[] = [];
   private selfThreads: CrThread[] = [];
   private root?: string;
@@ -43,6 +61,9 @@ export class Controller implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.autoRun?.cancel();
+    this.headWatcher?.dispose();
+    clearTimeout(this.branchTimer);
     this.comments.dispose();
     this.treeView.dispose();
   }
@@ -51,11 +72,50 @@ export class Controller implements vscode.Disposable {
     return [...this.gitlabThreads, ...this.selfThreads];
   }
 
-  private update(t?: CrThread): void {
+  private update(changed?: CrThread): void {
+    let t = changed;
     if (t) {
+      // A refresh can replace the thread objects while opencode works; move the result to the new object.
+      const src = t;
+      const live = this.gitlabThreads.find((x) => x.id === src.id && x !== src && x.cacheKey === src.cacheKey);
+      if (live) {
+        live.suggestion = t.suggestion;
+        live.draftReply = t.draftReply;
+        live.skipAutoFix = t.skipAutoFix;
+        live.skipAutoReply = t.skipAutoReply;
+        t = live;
+      }
+      this.saveCache(t);
       this.comments.render(t);
     }
     this.tree.refresh();
+  }
+
+  // ---------- suggestion cache (kept per workspace, so a restart does not ask opencode again) ----------
+
+  private readCache(): Record<string, CacheEntry> {
+    return this.ctx.workspaceState.get<Record<string, CacheEntry>>(CACHE_KEY) ?? {};
+  }
+
+  private saveCache(t: CrThread): void {
+    if (t.source !== 'gitlab') {
+      return;
+    }
+    const cache = this.readCache();
+    const minAge = Date.now() - CACHE_DAYS * 24 * 3600 * 1000;
+    for (const [k, v] of Object.entries(cache)) {
+      if (v.at < minAge) {
+        delete cache[k];
+      }
+    }
+    cache[t.cacheKey] = {
+      at: Date.now(),
+      suggestion: t.suggestion,
+      draftReply: t.draftReply,
+      skipAutoFix: t.skipAutoFix,
+      skipAutoReply: t.skipAutoReply,
+    };
+    void this.ctx.workspaceState.update(CACHE_KEY, cache);
   }
 
   // ---------- setup ----------
@@ -115,9 +175,21 @@ export class Controller implements vscode.Disposable {
 
   // ---------- load notes ----------
 
-  /** Calls made while a refresh runs share that refresh, so two refreshes never add the same threads twice. */
+  /**
+   * Only one refresh runs at a time, so two refreshes never add the same threads twice.
+   * A call made during a refresh runs one more refresh after it (the branch can have changed).
+   */
   refresh(): Promise<void> {
-    this.refreshing ??= this.load().finally(() => (this.refreshing = undefined));
+    if (this.refreshing) {
+      this.refreshQueued ??= this.refreshing
+        .catch(() => undefined)
+        .then(() => {
+          this.refreshQueued = undefined;
+          return this.refresh();
+        });
+      return this.refreshQueued;
+    }
+    this.refreshing = this.load().finally(() => (this.refreshing = undefined));
     return this.refreshing;
   }
 
@@ -126,8 +198,11 @@ export class Controller implements vscode.Disposable {
       { location: { viewId: 'gitlabCr.threads' }, title: 'Loading CR notes' },
       async () => {
         const s = await this.connect();
+        await this.watchBranch(s.root);
         const branch = await git.currentBranch(s.root);
+        this.branch = branch;
         s.mr = await s.client.findMergeRequest(s.project, branch);
+        s.me = await this.currentUser(s);
         const showResolved = vscode.workspace.getConfiguration('gitlabCr').get<boolean>('showResolved') ?? false;
         const discussions = s.mr ? await s.client.discussions(s.project, s.mr.iid) : [];
 
@@ -137,11 +212,15 @@ export class Controller implements vscode.Disposable {
         this.gitlabThreads = discussions
           .map((d) => toThread(d))
           .filter((t): t is CrThread => !!t && (showResolved || !t.resolved));
+        const cache = this.readCache();
         for (const t of this.gitlabThreads) {
-          // Keep suggestions and drafts made before the refresh.
+          // Keep suggestions and drafts made before the refresh or before VS Code was restarted.
           const old = previous.get(t.id);
-          t.suggestion = old?.suggestion;
-          t.draftReply = old?.draftReply;
+          const saved: Omit<CacheEntry, 'at'> | undefined = old && old.cacheKey === t.cacheKey ? old : cache[t.cacheKey];
+          t.suggestion = saved?.suggestion;
+          t.draftReply = saved?.draftReply;
+          t.skipAutoFix = saved?.skipAutoFix ?? false;
+          t.skipAutoReply = saved?.skipAutoReply ?? false;
         }
         if (!s.mr) {
           this.treeView.message = `No open merge request for branch '${branch}' in ${s.project}.`;
@@ -152,6 +231,131 @@ export class Controller implements vscode.Disposable {
         this.comments.clear('gitlab');
         this.comments.show(this.gitlabThreads);
         this.tree.setThreads(this.threads);
+      },
+    );
+    this.startAutoSuggest();
+  }
+
+  private async currentUser(s: Session): Promise<GitLabUser | undefined> {
+    if (this.me?.baseUrl !== s.baseUrl) {
+      try {
+        this.me = { baseUrl: s.baseUrl, user: await s.client.currentUser() };
+      } catch (err) {
+        this.output.appendLine(`Cannot read the current GitLab user: ${(err as Error).message}`);
+        return undefined;
+      }
+    }
+    return this.me.user;
+  }
+
+  // ---------- automatic work ----------
+
+  /** Refreshes when the checked-out branch changes (checkout, switch, or a new branch). */
+  private async watchBranch(root: string): Promise<void> {
+    const dir = await git.gitDir(root);
+    if (dir === this.watchedGitDir) {
+      return;
+    }
+    this.headWatcher?.dispose();
+    this.watchedGitDir = dir;
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), 'HEAD'));
+    const onHead = () => {
+      clearTimeout(this.branchTimer);
+      this.branchTimer = setTimeout(() => void this.onHeadChanged(root), 700);
+    };
+    watcher.onDidChange(onHead);
+    watcher.onDidCreate(onHead);
+    this.headWatcher = watcher;
+  }
+
+  private async onHeadChanged(root: string): Promise<void> {
+    if (!vscode.workspace.getConfiguration('gitlabCr.auto').get<boolean>('refreshOnBranchChange', true)) {
+      return;
+    }
+    try {
+      const branch = await git.currentBranch(root);
+      if (branch === this.branch || branch === 'HEAD') {
+        return; // same branch (for example a commit) or detached HEAD during a rebase
+      }
+      this.output.appendLine(`Branch changed: ${this.branch} -> ${branch}. Loading its merge request.`);
+      this.branch = branch;
+      await this.refresh();
+    } catch (err) {
+      if (!(err instanceof vscode.CancellationError)) {
+        this.output.appendLine(`Refresh after branch change failed: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  private isMine(t: CrThread): boolean {
+    const me = this.session?.me;
+    const last = t.notes[t.notes.length - 1];
+    return !!me && last?.authorId === me.id;
+  }
+
+  /**
+   * Asks opencode in the background for fixes and reply drafts for the open notes.
+   * Skips notes that already have them, notes the user handled, and notes where the user wrote the last reply.
+   */
+  private startAutoSuggest(): void {
+    this.autoRun?.cancel();
+    const cfg = vscode.workspace.getConfiguration('gitlabCr.auto');
+    const doFix = cfg.get<boolean>('suggestFixes', true);
+    const doReply = cfg.get<boolean>('suggestReplies', true);
+    const open = this.gitlabThreads.filter((t) => !t.resolved && !this.isMine(t));
+    const jobs: { t: CrThread; kind: 'fix' | 'reply' }[] = [];
+    for (const t of open) {
+      if (doFix && t.file && t.line && !t.suggestion && !t.skipAutoFix) {
+        jobs.push({ t, kind: 'fix' });
+      }
+      if (doReply && t.draftReply === undefined && !t.skipAutoReply) {
+        jobs.push({ t, kind: 'reply' });
+      }
+    }
+    if (!jobs.length) {
+      return;
+    }
+    const cts = new vscode.CancellationTokenSource();
+    this.autoRun = cts;
+    const mr = this.session?.mr;
+    void vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Window, title: 'opencode: preparing CR suggestions' },
+      async (progress) => {
+        let fixes = 0;
+        let replies = 0;
+        let failed = 0;
+        let done = 0;
+        const concurrency = vscode.workspace.getConfiguration('gitlabCr.fixAll').get<number>('concurrency') ?? 2;
+        await runPool(jobs, concurrency, cts.token, async ({ t, kind }) => {
+          try {
+            if (kind === 'fix') {
+              await this.generateFix(t, cts.token);
+              fixes++;
+            } else {
+              await this.generateReply(t, cts.token);
+              replies++;
+            }
+            this.update(t);
+          } catch (err) {
+            if (!(err instanceof vscode.CancellationError)) {
+              failed++;
+              this.output.appendLine(`Automatic ${kind} for ${t.location} failed: ${(err as Error).message}`);
+            }
+          }
+          progress.report({ message: `${++done}/${jobs.length}` });
+        });
+        if (cts.token.isCancellationRequested || (!fixes && !replies && !failed)) {
+          return;
+        }
+        const choice = await vscode.window.showInformationMessage(
+          `opencode prepared ${fixes} fix(es) and ${replies} reply draft(s)` +
+            (mr ? ` for !${mr.iid}` : '') +
+            (failed ? `. ${failed} failed (see the "GitLab CR" output).` : '.'),
+          'Show',
+        );
+        if (choice === 'Show') {
+          await vscode.commands.executeCommand('gitlabCr.threads.focus');
+        }
       },
     );
   }
@@ -279,6 +483,7 @@ export class Controller implements vscode.Disposable {
       throw new Error(result.failed[0].reason);
     }
     t.suggestion = undefined;
+    t.skipAutoFix = true;
     this.update(t);
     vscode.window.setStatusBarMessage('$(check) Fix applied. Review and save the file.', 5000);
   }
@@ -300,7 +505,8 @@ export class Controller implements vscode.Disposable {
       }
       pool = pick.value === 'gitlab' ? this.gitlabThreads : pick.value === 'self' ? this.selfThreads : this.threads;
     }
-    const targets = pool.filter((t) => t.file && t.line && !t.resolved);
+    // Skip notes whose fix was already applied or discarded: an applied insert must not go in twice.
+    const targets = pool.filter((t) => t.file && t.line && !t.resolved && !t.skipAutoFix);
     if (!targets.length) {
       vscode.window.showInformationMessage('There are no open notes on code lines to fix.');
       return;
@@ -313,24 +519,19 @@ export class Controller implements vscode.Disposable {
         const todo = targets.filter((t) => !t.suggestion);
         const concurrency = vscode.workspace.getConfiguration('gitlabCr.fixAll').get<number>('concurrency') ?? 2;
         let done = 0;
-        let next = 0;
         progress.report({ message: `0/${todo.length}` });
-        const worker = async () => {
-          while (next < todo.length && !token.isCancellationRequested) {
-            const t = todo[next++];
-            try {
-              await this.generateFix(t, token);
-              this.update(t);
-            } catch (err) {
-              if (!(err instanceof vscode.CancellationError)) {
-                errors.push(`${t.location}: ${(err as Error).message}`);
-              }
+        await runPool(todo, concurrency, token, async (t) => {
+          try {
+            await this.generateFix(t, token);
+            this.update(t);
+          } catch (err) {
+            if (!(err instanceof vscode.CancellationError)) {
+              errors.push(`${t.location}: ${(err as Error).message}`);
             }
-            done++;
-            progress.report({ message: `${done}/${todo.length}`, increment: 100 / todo.length });
           }
-        };
-        await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, worker));
+          done++;
+          progress.report({ message: `${done}/${todo.length}`, increment: 100 / todo.length });
+        });
         if (token.isCancellationRequested) {
           throw new vscode.CancellationError();
         }
@@ -373,6 +574,7 @@ export class Controller implements vscode.Disposable {
     );
     for (const t of result.applied) {
       t.suggestion = undefined;
+      t.skipAutoFix = true;
       this.update(t);
     }
     for (const f of result.failed) {
@@ -400,7 +602,14 @@ export class Controller implements vscode.Disposable {
   private async postReply(t: CrThread, body: string): Promise<void> {
     const { s, mr, discussionId } = this.requireGitLab(t);
     const note = await s.client.addNote(s.project, mr.iid, discussionId, body);
-    t.notes.push({ author: note.author.name, avatarUrl: note.author.avatar_url, body: note.body, createdAt: note.created_at });
+    t.notes.push({
+      id: note.id,
+      authorId: note.author.id,
+      author: note.author.name,
+      avatarUrl: note.author.avatar_url,
+      body: note.body,
+      createdAt: note.created_at,
+    });
     this.update(t);
   }
 
@@ -420,11 +629,7 @@ export class Controller implements vscode.Disposable {
     await this.postReply(t, text.trim());
   }
 
-  async suggestReply(arg: unknown): Promise<void> {
-    const t = await this.threadFrom(arg);
-    if (!t) {
-      return;
-    }
+  private async generateReply(t: CrThread, token?: vscode.CancellationToken): Promise<void> {
     const root = this.root ?? (await this.findRoot());
     let context: string | undefined;
     if (t.file && t.line) {
@@ -437,14 +642,22 @@ export class Controller implements vscode.Disposable {
         // the file may not exist locally; opencode can still answer from the conversation
       }
     }
-    const answer = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'opencode: writing a reply', cancellable: true },
-      (_p, token) => this.opencode.askJson<{ reply?: string }>(root, replyPrompt(t, context), token),
-    );
+    const answer = await this.opencode.askJson<{ reply?: string }>(root, replyPrompt(t, context), token);
     if (!answer.reply?.trim()) {
       throw new Error('opencode returned an empty reply.');
     }
     t.draftReply = answer.reply.trim();
+  }
+
+  async suggestReply(arg: unknown): Promise<void> {
+    const t = await this.threadFrom(arg);
+    if (!t) {
+      return;
+    }
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'opencode: writing a reply', cancellable: true },
+      (_p, token) => this.generateReply(t, token),
+    );
     this.update(t);
 
     if (t.vsThread) {
@@ -452,11 +665,10 @@ export class Controller implements vscode.Disposable {
       return;
     }
     // General notes have no editor thread: let the user edit the draft in a document.
-    const text = await this.editText(t.draftReply, `Suggested reply to: ${t.title}`);
+    const text = await this.editText(t.draftReply ?? '', `Suggested reply to: ${t.title}`);
     if (text?.trim()) {
-      await this.postReply(t, text.trim());
       t.draftReply = undefined;
-      this.update(t);
+      await this.postReply(t, text.trim());
     }
   }
 
@@ -478,9 +690,8 @@ export class Controller implements vscode.Disposable {
     if (!body) {
       return;
     }
-    await this.postReply(t, body);
     t.draftReply = undefined;
-    this.update(t);
+    await this.postReply(t, body);
   }
 
   editDraft(c: CrComment): void {
@@ -511,8 +722,10 @@ export class Controller implements vscode.Disposable {
     const t = c.crThread;
     if (c.kind === 'draft') {
       t.draftReply = undefined;
+      t.skipAutoReply = true;
     } else if (c.kind === 'suggestion') {
       t.suggestion = undefined;
+      t.skipAutoFix = true;
     }
     this.update(t);
   }
@@ -667,11 +880,34 @@ function toThread(d: Discussion): CrThread | undefined {
   return new CrThread(
     d.id,
     'gitlab',
-    notes.map((n) => ({ author: n.author.name, avatarUrl: n.author.avatar_url, body: n.body, createdAt: n.created_at })),
+    notes.map((n) => ({
+      id: n.id,
+      authorId: n.author.id,
+      author: n.author.name,
+      avatarUrl: n.author.avatar_url,
+      body: n.body,
+      createdAt: n.created_at,
+    })),
     file,
     file ? line ?? 1 : undefined,
     resolvable,
     resolved,
     d.id,
   );
+}
+
+/** Runs `fn` for each item, at most `concurrency` at a time, until the token is cancelled. */
+export async function runPool<T>(
+  items: T[],
+  concurrency: number,
+  token: vscode.CancellationToken,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length && !token.isCancellationRequested) {
+      await fn(items[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker));
 }
