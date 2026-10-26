@@ -24,6 +24,7 @@ interface Session {
 
 export class Controller implements vscode.Disposable {
   private session?: Session;
+  private refreshing?: Promise<void>;
   private gitlabThreads: CrThread[] = [];
   private selfThreads: CrThread[] = [];
   private root?: string;
@@ -114,35 +115,41 @@ export class Controller implements vscode.Disposable {
 
   // ---------- load notes ----------
 
-  async refresh(): Promise<void> {
+  /** Calls made while a refresh runs share that refresh, so two refreshes never add the same threads twice. */
+  refresh(): Promise<void> {
+    this.refreshing ??= this.load().finally(() => (this.refreshing = undefined));
+    return this.refreshing;
+  }
+
+  private async load(): Promise<void> {
     await vscode.window.withProgress(
       { location: { viewId: 'gitlabCr.threads' }, title: 'Loading CR notes' },
       async () => {
         const s = await this.connect();
         const branch = await git.currentBranch(s.root);
         s.mr = await s.client.findMergeRequest(s.project, branch);
-        this.session = s;
-        const previous = new Map(this.gitlabThreads.map((t) => [t.id, t]));
+        const showResolved = vscode.workspace.getConfiguration('gitlabCr').get<boolean>('showResolved') ?? false;
+        const discussions = s.mr ? await s.client.discussions(s.project, s.mr.iid) : [];
 
-        this.comments.clear('gitlab');
+        // Replace the old threads only after all data is loaded.
+        const previous = new Map(this.gitlabThreads.map((t) => [t.id, t]));
+        this.session = s;
+        this.gitlabThreads = discussions
+          .map((d) => toThread(d))
+          .filter((t): t is CrThread => !!t && (showResolved || !t.resolved));
+        for (const t of this.gitlabThreads) {
+          // Keep suggestions and drafts made before the refresh.
+          const old = previous.get(t.id);
+          t.suggestion = old?.suggestion;
+          t.draftReply = old?.draftReply;
+        }
         if (!s.mr) {
-          this.gitlabThreads = [];
           this.treeView.message = `No open merge request for branch '${branch}' in ${s.project}.`;
         } else {
-          const showResolved = vscode.workspace.getConfiguration('gitlabCr').get<boolean>('showResolved') ?? false;
-          const discussions = await s.client.discussions(s.project, s.mr.iid);
-          this.gitlabThreads = discussions
-            .map((d) => toThread(d))
-            .filter((t): t is CrThread => !!t && (showResolved || !t.resolved));
-          for (const t of this.gitlabThreads) {
-            // Keep suggestions and drafts made before the refresh.
-            const old = previous.get(t.id);
-            t.suggestion = old?.suggestion;
-            t.draftReply = old?.draftReply;
-          }
           const open = this.gitlabThreads.filter((t) => !t.resolved).length;
           this.treeView.message = `!${s.mr.iid} ${s.mr.title} (${open} open note${open === 1 ? '' : 's'})`;
         }
+        this.comments.clear('gitlab');
         this.comments.show(this.gitlabThreads);
         this.tree.setThreads(this.threads);
       },

@@ -2,6 +2,16 @@
 
 Shows the code review (CR) notes of your self-hosted GitLab merge request inside VS Code, and uses [opencode](https://opencode.ai) to suggest fixes and replies.
 
+## How it looks
+
+Notes on code lines show as comment threads directly under the line in the editor. The **GitLab CR** view in the activity bar lists all notes, including general notes that are not on a line.
+
+![Review notes with a suggested fix and a suggested reply](docs/review-notes.png)
+
+Self review findings show the same way, with the label "Self review" and the severity:
+
+![Self review finding](docs/self-review.png)
+
 ## Features
 
 | Button | Where | What it does |

@@ -48,7 +48,9 @@ export class CrThread {
 
   get title(): string {
     const first = this.notes[0]?.body ?? '';
-    return first.split('\n').find((l) => l.trim())?.trim().slice(0, 120) ?? '(empty)';
+    const line = first.split('\n').find((l) => l.trim()) ?? '';
+    // Plain text for the sidebar: remove the most common markdown marks.
+    return line.replace(/\*\*|__|`/g, '').trim().slice(0, 120) || '(empty)';
   }
 
   get location(): string {
