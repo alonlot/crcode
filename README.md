@@ -25,7 +25,8 @@ Self review findings show the same way, with the label "Self review" and the sev
 | **Fix All CR Notes** 🪄 | GitLab CR view title | Makes fixes for all open notes of the merge request (several in parallel) and uses the fixes that are already ready. Then it applies them in one edit. It skips notes whose fix you already applied or discarded. Fixes that overlap are not applied; the log shows them. |
 | **Self Code Review** ☑ | GitLab CR view title | Sends your diff (merge base of the target branch to the working tree, including uncommitted changes) to opencode for a review. Findings show as threads. On each finding you can **Suggest Fix**, **Apply Fix**, **Post to Merge Request** or **Dismiss**. |
 | **Resolve / Unresolve** | Thread title, view item context menu | Resolves the GitLab discussion. |
-| **Pipeline status** | Status bar (`CI: running`, `CI: failed (1)`), top of the GitLab CR view | Shows the latest pipeline of the merge request and its jobs. Click the status bar item for the job list. See *Pipeline* below. |
+| **Pipeline status** | Status bar (`CI: running`, `CI: failed (1)`), top of the GitLab CR view | Shows the latest pipeline of the merge request, with its stages and jobs. See *Pipeline* below. |
+| **Show Pipeline Graph** 📊 | Status bar item, view title, pipeline item | Opens the pipeline graph as on the GitLab merge request page: one column per stage, one pill per job, with retry, play, cancel, log and "explain and fix" on each job. |
 | **Explain and Fix Failed Job (opencode)** | Failed job in the view, status bar list, failure message | Sends the end of the job log to opencode. The cause and a fix show as a thread on the code line, with **Preview** and **Apply Fix**. |
 | **Write Commit Message (opencode)** ✨ | Source Control title, command palette | Writes the commit message for the staged changes in the format you set, and puts it in the commit box. See *Commit messages* below. |
 
@@ -68,9 +69,21 @@ If the commit is not in your local repository, the extension runs `git fetch <re
 
 ## Pipeline
 
-The extension loads the latest pipeline of the merge request with the notes. The status bar shows it, and the GitLab CR view lists the jobs. While the pipeline runs, the status is checked every 60 seconds (`gitlabCr.pipeline.pollSeconds`), and also a few seconds after a push.
+The extension loads the latest pipeline of the merge request with the notes. The status bar shows it, and the GitLab CR view lists the stages and jobs. While the pipeline runs, the status is checked every 60 seconds (`gitlabCr.pipeline.pollSeconds`), and also a few seconds after a push.
 
-![Failed pipeline with the cause and a fix](docs/pipeline.png)
+**Show Pipeline Graph** (click the status bar item, the 📊 icon in the view title, or the pipeline item) opens the same graph that GitLab shows on the merge request page:
+
+![Pipeline graph](docs/pipeline-graph.png)
+
+- One column per stage, in pipeline order, with the stage status (the GitLab rules: running wins over pending, pending over failed, and a failed job that is allowed to fail shows as a warning).
+- One pill per job with the GitLab status icon (passed, failed, warning, running, pending, created, canceled, skipped, manual, scheduled) and the duration. A 💡 on the pill means opencode has a finding for it.
+- Hover a pill for its buttons: **log** (opens the cleaned log in an editor; double-click does the same), **explain and fix** (failed jobs), **retry**, **run** (manual jobs), **cancel** (running jobs), and **open in GitLab**. Cancel asks for confirmation.
+- The header shows the status, the merge request, the branch and commit, the duration, who started it, and the trigger. The buttons are **Refresh**, **Retry failed jobs** or **Cancel pipeline**, **Explain failed jobs**, and **Open in GitLab**.
+- The graph updates itself at each check of the pipeline.
+
+The same jobs show in the GitLab CR view, grouped by stage, with the same buttons on each job:
+
+![Failed pipeline in the view, with the cause and a fix](docs/pipeline.png)
 
 When the pipeline fails:
 
@@ -172,7 +185,8 @@ The extension runs `opencode run --format json --agent <agent> [--model <model>]
 
 ## Limits
 
-- The pipeline shown is the latest pipeline that GitLab lists for the merge request. Child pipelines and downstream pipelines are not listed.
+- The pipeline shown is the latest pipeline that GitLab lists for the merge request. Child pipelines, downstream pipelines and `needs` relations (the DAG lines between jobs) are not shown; the lines in the graph connect the stages only.
+- Retry, run and cancel need a token with the `api` scope and the Developer role on the project.
 - The job log analysis sees only the end of the log. For a long log where the error is early, set `gitlabCr.pipeline.maxLogKb` higher.
 
 - Line numbers are moved with the file on disk. Changes that are not saved are not included until the next load.

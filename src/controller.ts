@@ -9,13 +9,16 @@ import { Discussion, GitLabClient, GitLabUser, Job, MergeRequest } from './gitla
 import { CrThread, FixSuggestion } from './model';
 import { OpencodeRunner } from './opencode';
 import { mapLine, numberLines, parseHunks, validateFixAnswer } from './parse';
+import { groupStages, jobActions, shownStatus } from './ciModel';
 import { PipelineInfo, PipelineStatusBar, failedJobs, isActive, statusIcon, statusText } from './pipeline';
+import { PipelineView, PipelineViewData, PipelineViewMessage, toViewStage } from './pipelineView';
 import { fixPrompt, pipelinePrompt, replyPrompt, selfReviewPrompt } from './prompts';
-import { cleanJobLog } from './text';
+import { cleanJobLog, formatDuration } from './text';
 import { ThreadTree } from './tree';
 
 const TOKEN_KEY = 'gitlabCr.token';
 export const PREVIEW_SCHEME = 'gitlabcr-preview';
+export const LOG_SCHEME = 'gitlabcr-log';
 const CACHE_KEY = 'gitlabCr.suggestionCache';
 const PIPELINE_CACHE_KEY = 'gitlabCr.pipelineCache';
 const CACHE_DAYS = 14;
@@ -76,6 +79,9 @@ export class Controller implements vscode.Disposable {
   private remoteWatcher?: vscode.FileSystemWatcher;
   private remoteTimer?: NodeJS.Timeout;
   readonly statusBar = new PipelineStatusBar();
+  readonly pipelineView: PipelineView;
+  private readonly logs = new Map<string, string>();
+  private readonly logChanged = new vscode.EventEmitter<vscode.Uri>();
   readonly commitWriter: CommitWriter;
   private root?: string;
   readonly comments: CommentManager;
@@ -89,6 +95,13 @@ export class Controller implements vscode.Disposable {
   ) {
     this.opencode = new OpencodeRunner(output);
     this.commitWriter = new CommitWriter(this.opencode, output);
+    this.pipelineView = new PipelineView(ctx, (m) => this.onPipelineMessage(m));
+    ctx.subscriptions.push(
+      vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, {
+        onDidChange: this.logChanged.event,
+        provideTextDocumentContent: (uri) => this.logs.get(uri.toString()) ?? 'Loading the job log…',
+      }),
+    );
     this.comments = new CommentManager(() => this.root);
     this.treeView = vscode.window.createTreeView('gitlabCr.threads', { treeDataProvider: this.tree as any, showCollapseAll: true });
     this.pollTimer = setInterval(() => this.poll(), 30_000);
@@ -109,6 +122,7 @@ export class Controller implements vscode.Disposable {
     clearTimeout(this.branchTimer);
     clearTimeout(this.remoteTimer);
     this.statusBar.dispose();
+    this.pipelineView.dispose();
     this.comments.dispose();
     this.treeView.dispose();
   }
@@ -1037,6 +1051,7 @@ export class Controller implements vscode.Disposable {
     this.pipelineThreads = this.pipelineThreads.filter((x) => x !== t);
     if (t.source === 'pipeline') {
       this.saveJobCache(t, true);
+      this.pipelineView.update(this.pipelineData());
     }
     this.tree.setThreads(this.threads);
   }
@@ -1089,8 +1104,11 @@ export class Controller implements vscode.Disposable {
         this.setPipeline(undefined);
         return;
       }
-      const jobs = await s.client.pipelineJobs(s.project, latest.id);
-      this.setPipeline({ pipeline: latest, jobs }, s.mr.iid);
+      const [jobs, details] = await Promise.all([
+        s.client.pipelineJobs(s.project, latest.id),
+        s.client.pipeline(s.project, latest.id).catch(() => latest),
+      ]);
+      this.setPipeline({ pipeline: { ...latest, ...details }, jobs }, s.mr.iid);
     } catch (err) {
       this.output.appendLine(`Cannot load the pipeline: ${(err as Error).message}`);
       return;
@@ -1136,6 +1154,165 @@ export class Controller implements vscode.Disposable {
     if (!info) {
       this.clearPipelineFindings();
     }
+    this.pipelineView.update(this.pipelineData());
+  }
+
+  /** Data for the pipeline graph panel. */
+  pipelineData(): PipelineViewData | undefined {
+    const info = this.pipeline;
+    if (!info) {
+      return undefined;
+    }
+    const p = info.pipeline;
+    const stages = groupStages(info.jobs).map((st) =>
+      toViewStage(st, (jobId) => ({
+        actions: jobActions(info.jobs.find((j) => j.id === jobId)!),
+        hasFinding: this.pipelineThreads.some((t) => t.id === `pipeline-${jobId}`),
+      })),
+    );
+    return {
+      pipeline: {
+        id: p.id,
+        status: p.status,
+        ref: p.ref,
+        sha: p.sha,
+        webUrl: p.web_url,
+        duration: formatDuration(p.duration),
+        createdAt: p.created_at,
+        user: p.user?.name,
+        source: p.source,
+      },
+      mrIid: this.session?.mr?.iid,
+      mrTitle: this.session?.mr?.title,
+      stages,
+      counts: {
+        total: info.jobs.length,
+        failed: info.jobs.filter((j) => shownStatus(j) === 'failed').length,
+        running: info.jobs.filter((j) => j.status === 'running').length,
+        success: info.jobs.filter((j) => j.status === 'success').length,
+      },
+      updatedAt: new Date().toLocaleTimeString(),
+    };
+  }
+
+  async openPipelineView(): Promise<void> {
+    if (!this.pipeline && this.session) {
+      await this.loadPipeline(this.session);
+    } else if (!this.session) {
+      await this.refresh().catch((err) => this.output.appendLine(`Cannot load: ${(err as Error).message}`));
+    }
+    this.pipelineView.show(this.pipelineData());
+  }
+
+  private jobById(id: number): Job {
+    const job = this.pipeline?.jobs.find((j) => j.id === id);
+    if (!job) {
+      throw new Error(`Job ${id} is not in the current pipeline. Refresh the pipeline.`);
+    }
+    return job;
+  }
+
+  /** Buttons of the pipeline graph. */
+  async onPipelineMessage(m: PipelineViewMessage): Promise<void> {
+    try {
+      switch (m.type) {
+        case 'openUrl':
+          await vscode.env.openExternal(vscode.Uri.parse(m.url));
+          break;
+        case 'refresh':
+          await this.refreshPipeline();
+          break;
+        case 'log':
+          await this.showJobLog(this.jobById(m.jobId));
+          break;
+        case 'fix':
+          await this.fixPipeline(this.jobById(m.jobId));
+          break;
+        case 'finding': {
+          const t = this.pipelineThreads.find((x) => x.id === `pipeline-${m.jobId}`);
+          if (t?.file) {
+            await this.openThread(t);
+          } else {
+            await vscode.commands.executeCommand('gitlabCr.threads.focus');
+          }
+          break;
+        }
+        case 'retry':
+        case 'play':
+        case 'cancel':
+          await this.jobAction(this.jobById(m.jobId), m.type);
+          break;
+        case 'retryPipeline':
+        case 'cancelPipeline':
+          await this.pipelineAction(m.type === 'retryPipeline' ? 'retry' : 'cancel');
+          break;
+        case 'explainFailed':
+          if (this.pipeline) {
+            this.startAutoExplain(this.pipeline.jobs.filter((j) => j.status === 'failed'), true);
+          }
+          break;
+      }
+    } catch (err) {
+      if (!(err instanceof vscode.CancellationError)) {
+        const msg = (err as Error).message;
+        this.output.appendLine(`[pipeline graph ${m.type}] ${msg}`);
+        void vscode.window.showErrorMessage(msg, 'Show Log').then((pick) => pick && this.output.show());
+      }
+    }
+  }
+
+  /** Retry, play or cancel one job on GitLab, then reload the pipeline. */
+  async jobAction(arg: unknown, action: 'retry' | 'play' | 'cancel'): Promise<void> {
+    const s = this.session;
+    const job = ThreadTree.jobOf(arg) ?? ((arg as Job)?.web_url ? (arg as Job) : undefined);
+    if (!s || !job) {
+      throw new Error('No pipeline job selected.');
+    }
+    if (action === 'cancel') {
+      const ok = await vscode.window.showWarningMessage(`Cancel job "${job.name}"?`, { modal: true }, 'Cancel Job');
+      if (ok !== 'Cancel Job') {
+        return;
+      }
+    }
+    await (action === 'retry' ? s.client.retryJob(s.project, job.id) : action === 'play' ? s.client.playJob(s.project, job.id) : s.client.cancelJob(s.project, job.id));
+    vscode.window.setStatusBarMessage(`$(beaker) Job "${job.name}": ${action === 'retry' ? 'retried' : action === 'play' ? 'started' : 'canceled'}.`, 6000);
+    await this.loadPipeline(s);
+  }
+
+  async pipelineAction(action: 'retry' | 'cancel'): Promise<void> {
+    const s = this.session;
+    const p = this.pipeline?.pipeline;
+    if (!s || !p) {
+      throw new Error('No pipeline loaded.');
+    }
+    if (action === 'cancel') {
+      const ok = await vscode.window.showWarningMessage(`Cancel pipeline #${p.id}?`, { modal: true }, 'Cancel Pipeline');
+      if (ok !== 'Cancel Pipeline') {
+        return;
+      }
+    }
+    await (action === 'retry' ? s.client.retryPipeline(s.project, p.id) : s.client.cancelPipeline(s.project, p.id));
+    vscode.window.setStatusBarMessage(`$(beaker) Pipeline #${p.id}: ${action === 'retry' ? 'failed jobs retried' : 'canceled'}.`, 6000);
+    await this.loadPipeline(s);
+  }
+
+  /** Opens the job log in a read-only editor (colors and section markers removed). */
+  async showJobLog(arg: unknown): Promise<void> {
+    const s = this.session;
+    const job = ThreadTree.jobOf(arg) ?? ((arg as Job)?.web_url ? (arg as Job) : undefined);
+    if (!s || !job) {
+      throw new Error('No pipeline job selected.');
+    }
+    const uri = vscode.Uri.from({ scheme: LOG_SCHEME, path: `/${job.stage}/${job.name}.log`, query: String(job.id) });
+    const key = uri.toString();
+    this.logs.delete(key);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.languages.setTextDocumentLanguage(doc, 'log').then(undefined, () => undefined);
+    await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Active });
+    const raw = await s.client.jobTrace(s.project, job.id);
+    const header = `# ${job.stage} / ${job.name} — ${statusText(job.status)}${job.duration ? ` in ${formatDuration(job.duration)}` : ''}\n# ${job.web_url}\n\n`;
+    this.logs.set(key, header + (cleanJobLog(raw, 50 * 1024 * 1024).text || '(empty log)'));
+    this.logChanged.fire(uri);
   }
 
   clearPipelineFindings(): void {
@@ -1144,6 +1321,7 @@ export class Controller implements vscode.Disposable {
       this.comments.clear('pipeline');
       this.pipelineThreads = [];
       this.tree.setThreads(this.threads);
+      this.pipelineView.update(this.pipelineData());
     }
   }
 
@@ -1242,14 +1420,14 @@ export class Controller implements vscode.Disposable {
   }
 
   /** Runs opencode for the failed jobs in the background, except for jobs explained before. */
-  private startAutoExplain(jobs: Job[]): void {
+  private startAutoExplain(jobs: Job[], explicit = false): void {
     this.pipelineRun?.cancel();
     const cache = this.readJobCache();
-    const max = vscode.workspace.getConfiguration('gitlabCr.pipeline').get<number>('maxJobs', 3);
+    const max = explicit ? Infinity : vscode.workspace.getConfiguration('gitlabCr.pipeline').get<number>('maxJobs', 3);
     const todo: Job[] = [];
     for (const j of jobs) {
       const saved = cache[`pipeline-${j.id}`];
-      if (saved && !saved.dismissed) {
+      if (saved && (!saved.dismissed || explicit) && !this.pipelineThreads.some((t) => t.id === `pipeline-${j.id}`)) {
         this.addPipelineThread(j, saved.body, saved.file, saved.line, saved.suggestion, saved.skipAutoFix);
       } else if (!saved && todo.length < max) {
         todo.push(j);
@@ -1349,6 +1527,7 @@ export class Controller implements vscode.Disposable {
     this.comments.show([t]);
     this.tree.setThreads(this.threads);
     this.saveJobCache(t, false);
+    this.pipelineView.update(this.pipelineData());
     return t;
   }
 

@@ -475,6 +475,36 @@
         "command": "gitlabCr.clearPipelineFindings",
         "title": "Clear CI Failure Findings",
         "category": "GitLab CR"
+      },
+      {
+        "command": "gitlabCr.openPipelineView",
+        "title": "Show Pipeline Graph",
+        "category": "GitLab CR",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "gitlabCr.showJobLog",
+        "title": "Show Job Log",
+        "category": "GitLab CR",
+        "icon": "$(output)"
+      },
+      {
+        "command": "gitlabCr.retryJob",
+        "title": "Retry Job",
+        "category": "GitLab CR",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "gitlabCr.playJob",
+        "title": "Run Manual Job",
+        "category": "GitLab CR",
+        "icon": "$(play)"
+      },
+      {
+        "command": "gitlabCr.cancelJob",
+        "title": "Cancel Job",
+        "category": "GitLab CR",
+        "icon": "$(stop-circle)"
       }
     ],
     "menus": {
@@ -498,6 +528,11 @@
           "command": "gitlabCr.openInBrowser",
           "when": "view == gitlabCr.threads",
           "group": "navigation@4"
+        },
+        {
+          "command": "gitlabCr.openPipelineView",
+          "when": "view == gitlabCr.threads",
+          "group": "navigation@5"
         },
         {
           "command": "gitlabCr.clearSelfReview",
@@ -573,11 +608,6 @@
         },
         {
           "command": "gitlabCr.openJob",
-          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob\\b/",
-          "group": "inline@2"
-        },
-        {
-          "command": "gitlabCr.openJob",
           "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-pipeline\\b/",
           "group": "inline@5"
         },
@@ -585,6 +615,36 @@
           "command": "gitlabCr.dismissFinding",
           "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-pipeline\\b/",
           "group": "inline@6"
+        },
+        {
+          "command": "gitlabCr.openPipelineView",
+          "when": "view == gitlabCr.threads && viewItem == pipeline",
+          "group": "inline@0"
+        },
+        {
+          "command": "gitlabCr.showJobLog",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob\\b/",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitlabCr.retryJob",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob-(failed|canceled|success)\\b/",
+          "group": "inline@3"
+        },
+        {
+          "command": "gitlabCr.playJob",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob-manual\\b/",
+          "group": "inline@3"
+        },
+        {
+          "command": "gitlabCr.cancelJob",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob-(running|pending)\\b/",
+          "group": "inline@3"
+        },
+        {
+          "command": "gitlabCr.openJob",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob\\b/",
+          "group": "z@1"
         }
       ],
       "comments/commentThread/title": [
@@ -725,6 +785,22 @@
         },
         {
           "command": "gitlabCr.openJob",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.showJobLog",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.retryJob",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.playJob",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.cancelJob",
           "when": "false"
         }
       ],

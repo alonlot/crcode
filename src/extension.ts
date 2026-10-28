@@ -49,6 +49,11 @@ export function activate(ctx: vscode.ExtensionContext): { controller: Controller
   register('gitlabCr.fixPipeline', (arg) => controller.fixPipeline(arg));
   register('gitlabCr.openJob', (arg) => controller.openJob(arg));
   register('gitlabCr.clearPipelineFindings', () => controller.clearPipelineFindings());
+  register('gitlabCr.openPipelineView', () => controller.openPipelineView());
+  register('gitlabCr.showJobLog', (arg) => controller.showJobLog(arg));
+  register('gitlabCr.retryJob', (arg) => controller.jobAction(arg, 'retry'));
+  register('gitlabCr.playJob', (arg) => controller.jobAction(arg, 'play'));
+  register('gitlabCr.cancelJob', (arg) => controller.jobAction(arg, 'cancel'));
 
   // Load the notes on startup when a token is already saved. Errors only go to the log here.
   ctx.secrets.get('gitlabCr.token').then((token) => {

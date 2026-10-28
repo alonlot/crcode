@@ -12,7 +12,7 @@ export function isActive(status: PipelineStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
 
-export function statusIcon(status: PipelineStatus): string {
+export function statusIcon(status: PipelineStatus | 'warning'): string {
   switch (status) {
     case 'success':
       return 'check';
@@ -28,12 +28,14 @@ export function statusIcon(status: PipelineStatus): string {
       return 'play';
     case 'scheduled':
       return 'calendar';
+    case 'warning':
+      return 'warning';
     default:
       return 'clock';
   }
 }
 
-export function statusText(status: PipelineStatus): string {
+export function statusText(status: PipelineStatus | 'warning'): string {
   return status.replace(/_/g, ' ');
 }
 
@@ -49,7 +51,7 @@ export class PipelineStatusBar implements vscode.Disposable {
   constructor() {
     this.item = vscode.window.createStatusBarItem('gitlabCr.pipeline', vscode.StatusBarAlignment.Left, 40);
     this.item.name = 'GitLab CR: pipeline';
-    this.item.command = 'gitlabCr.showPipeline';
+    this.item.command = 'gitlabCr.openPipelineView';
   }
 
   update(info: PipelineInfo | undefined, mrIid?: number): void {
@@ -64,7 +66,7 @@ export class PipelineStatusBar implements vscode.Disposable {
     for (const j of jobs) {
       md.appendMarkdown(`$(${statusIcon(j.status)}) ${j.stage} / ${j.name}${j.allow_failure && j.status === 'failed' ? ' (allowed to fail)' : ''}\n\n`);
     }
-    md.appendMarkdown('_Click for the job list._');
+    md.appendMarkdown('_Click for the pipeline graph._');
     md.supportThemeIcons = true;
     this.item.tooltip = md;
     this.item.backgroundColor =

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { CiStage, groupStages } from './ciModel';
 import { Job } from './gitlab';
 import { CrThread } from './model';
 import { PipelineInfo, failedJobs, statusIcon, statusText } from './pipeline';
@@ -11,11 +12,15 @@ export class PipelineNode {
   constructor(readonly info: PipelineInfo) {}
 }
 
+export class StageNode {
+  constructor(readonly stage: CiStage) {}
+}
+
 export class JobNode {
   constructor(readonly job: Job) {}
 }
 
-type Node = CrThread | NoteNode | PipelineNode | JobNode;
+type Node = CrThread | NoteNode | PipelineNode | StageNode | JobNode;
 
 export class ThreadTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
@@ -51,7 +56,10 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
       return [];
     }
     if (element instanceof PipelineNode) {
-      return element.info.jobs.map((j) => new JobNode(j));
+      return groupStages(element.info.jobs).map((st) => new StageNode(st));
+    }
+    if (element instanceof StageNode) {
+      return element.stage.jobs.map((j) => new JobNode(j as Job));
     }
     const nodes: Node[] = element.notes.map(
       (n) => new NoteNode(element, n.author, n.body.replace(/\s+/g, ' ').slice(0, 200), 'comment'),
@@ -75,7 +83,17 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
       item.description = failed.length ? `${failed.length} job(s) failed` : `${element.info.jobs.length} job(s)`;
       item.iconPath = new vscode.ThemeIcon(statusIcon(pipeline.status));
       item.contextValue = 'pipeline';
-      item.tooltip = pipeline.web_url;
+      item.tooltip = `${pipeline.web_url}\nClick for the pipeline graph`;
+      item.command = { command: 'gitlabCr.openPipelineView', title: 'Show Pipeline Graph' };
+      return item;
+    }
+    if (element instanceof StageNode) {
+      const st = element.stage;
+      const item = new vscode.TreeItem(st.name, vscode.TreeItemCollapsibleState.Expanded);
+      const failed = st.jobs.filter((j) => j.status === 'failed' && !j.allow_failure).length;
+      item.description = `${statusText(st.status === 'warning' ? 'failed' : st.status)}${st.status === 'warning' ? ' (allowed)' : ''} · ${st.jobs.length} job(s)${failed ? `, ${failed} failed` : ''}`;
+      item.iconPath = new vscode.ThemeIcon(st.status === 'warning' ? 'warning' : statusIcon(st.status));
+      item.contextValue = 'stage';
       return item;
     }
     if (element instanceof JobNode) {
@@ -85,7 +103,7 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
       item.iconPath = new vscode.ThemeIcon(statusIcon(j.status));
       item.contextValue = `job job-${j.status}`;
       item.tooltip = j.failure_reason ? `${j.web_url}\n${j.failure_reason}` : j.web_url;
-      item.command = { command: 'gitlabCr.openJob', title: 'Open Job Log in Browser', arguments: [element] };
+      item.command = { command: 'gitlabCr.showJobLog', title: 'Show Job Log', arguments: [element] };
       return item;
     }
     if (element instanceof NoteNode) {

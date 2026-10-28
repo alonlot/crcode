@@ -1,4 +1,5 @@
 // Pure text helpers with no dependency on the vscode module, so they can be unit tested.
+export { formatDuration } from './ciModel';
 
 /**
  * Fills a commit message template.

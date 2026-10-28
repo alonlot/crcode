@@ -70,8 +70,12 @@ export interface Pipeline {
   ref: string;
   sha: string;
   web_url: string;
+  source?: string;
   created_at?: string;
   updated_at?: string;
+  finished_at?: string | null;
+  duration?: number | null;
+  user?: { name: string; username: string };
 }
 
 export interface Job {
@@ -82,7 +86,10 @@ export interface Job {
   web_url: string;
   allow_failure: boolean;
   failure_reason?: string;
-  finished_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration?: number | null;
+  queued_duration?: number | null;
 }
 
 export class GitLabError extends Error {
@@ -220,6 +227,31 @@ export class GitLabClient {
 
   pipelineJobs(project: string, pipelineId: number): Promise<Job[]> {
     return this.paginate(`projects/${GitLabClient.project(project)}/pipelines/${pipelineId}/jobs?include_retried=false`);
+  }
+
+  /** Full details of a pipeline (the list endpoint has no duration). */
+  pipeline(project: string, pipelineId: number): Promise<Pipeline> {
+    return this.json('GET', `projects/${GitLabClient.project(project)}/pipelines/${pipelineId}`);
+  }
+
+  retryJob(project: string, jobId: number): Promise<Job> {
+    return this.json('POST', `projects/${GitLabClient.project(project)}/jobs/${jobId}/retry`);
+  }
+
+  playJob(project: string, jobId: number): Promise<Job> {
+    return this.json('POST', `projects/${GitLabClient.project(project)}/jobs/${jobId}/play`);
+  }
+
+  cancelJob(project: string, jobId: number): Promise<Job> {
+    return this.json('POST', `projects/${GitLabClient.project(project)}/jobs/${jobId}/cancel`);
+  }
+
+  retryPipeline(project: string, pipelineId: number): Promise<Pipeline> {
+    return this.json('POST', `projects/${GitLabClient.project(project)}/pipelines/${pipelineId}/retry`);
+  }
+
+  cancelPipeline(project: string, pipelineId: number): Promise<Pipeline> {
+    return this.json('POST', `projects/${GitLabClient.project(project)}/pipelines/${pipelineId}/cancel`);
   }
 
   /** Raw log of a job (plain text). */
