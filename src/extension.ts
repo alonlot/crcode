@@ -28,6 +28,8 @@ export function activate(ctx: vscode.ExtensionContext): { controller: Controller
   register('gitlabCr.openThread', (t) => controller.openThread(t));
   register('gitlabCr.suggestFix', (arg) => controller.suggestFix(arg));
   register('gitlabCr.applyFix', (arg) => controller.applyFix(arg));
+  register('gitlabCr.previewFix', (arg) => controller.previewFix(arg));
+  register('gitlabCr.applyFromPreview', (uri) => controller.applyFromPreview(uri));
   register('gitlabCr.fixAll', () => controller.fixAll());
   register('gitlabCr.reply', (arg) => controller.reply(arg));
   register('gitlabCr.suggestReply', (arg) => controller.suggestReply(arg));

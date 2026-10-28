@@ -152,3 +152,49 @@ export function findOverlaps(ranges: { start: number; end: number }[]): Set<numb
   }
   return rejected;
 }
+
+export interface Hunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+}
+
+/** Reads the hunk headers of a `git diff --unified=0` output. */
+export function parseHunks(diff: string): Hunk[] {
+  const hunks: Hunk[] = [];
+  for (const m of diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    hunks.push({
+      oldStart: Number(m[1]),
+      oldCount: m[2] === undefined ? 1 : Number(m[2]),
+      newStart: Number(m[3]),
+      newCount: m[4] === undefined ? 1 : Number(m[4]),
+    });
+  }
+  return hunks;
+}
+
+/**
+ * Moves a line number of the old file to the new file through the hunks of a `--unified=0` diff.
+ * `outdated` is true when the line itself was changed or deleted; the line is then the nearest line.
+ */
+export function mapLine(hunks: Hunk[], oldLine: number): { line: number; outdated: boolean } {
+  let delta = 0;
+  for (const h of hunks) {
+    if (h.oldCount === 0) {
+      // Pure insert after old line `oldStart`.
+      if (h.oldStart < oldLine) {
+        delta += h.newCount;
+      }
+      continue;
+    }
+    const oldEnd = h.oldStart + h.oldCount - 1;
+    if (oldLine > oldEnd) {
+      delta += h.newCount - h.oldCount;
+    } else if (oldLine >= h.oldStart) {
+      // With newCount 0, newStart is the line before the deleted block.
+      return { line: Math.max(1, h.newCount === 0 ? h.newStart + 1 : h.newStart), outdated: true };
+    }
+  }
+  return { line: Math.max(1, oldLine + delta), outdated: false };
+}

@@ -140,3 +140,25 @@ export async function applyGrouped<T>(root: string, groups: { owner: T; edits: P
   }
   return { applied, failed };
 }
+
+/** Returns the full text of each changed file as it will be after the edits, without changing anything. */
+export async function previewTexts(root: string, edits: PreparedEdit[]): Promise<Map<string, string>> {
+  const byFile = new Map<string, PreparedEdit[]>();
+  for (const e of edits) {
+    byFile.set(e.file, [...(byFile.get(e.file) ?? []), e]);
+  }
+  const out = new Map<string, string>();
+  for (const [file, list] of byFile) {
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(resolveInRoot(root, file)));
+    const ranges = list.map((e) => ({ e, start: doc.offsetAt(locate(doc, e).start), end: doc.offsetAt(locate(doc, e).end) }));
+    if (findOverlaps(ranges).size) {
+      throw new Error(`${file}: the edits of this fix overlap`);
+    }
+    let text = doc.getText();
+    for (const r of ranges.sort((a, b) => b.start - a.start)) {
+      text = text.slice(0, r.start) + r.e.replacement + text.slice(r.end);
+    }
+    out.set(file, text);
+  }
+  return out;
+}

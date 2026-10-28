@@ -37,6 +37,12 @@ export class CrThread {
   /** Set when the user discarded the reply draft. */
   skipAutoReply = false;
   vsThread?: vscode.CommentThread;
+  /** Commit the note's line number refers to (GitLab position head_sha). */
+  positionSha?: string;
+  /** Line number on GitLab, before it was moved to the local file. */
+  gitlabLine?: number;
+  /** The line of the note was changed or deleted locally after the note was written. */
+  outdated = false;
 
   constructor(
     readonly id: string,
@@ -45,7 +51,7 @@ export class CrThread {
     /** Path relative to the repository root. */
     readonly file: string | undefined,
     /** 1-based line in the current version of the file. */
-    readonly line: number | undefined,
+    public line: number | undefined,
     public resolvable: boolean,
     public resolved: boolean,
     readonly discussionId?: string,
@@ -62,6 +68,18 @@ export class CrThread {
   /** Changes when a new note is added, so cached suggestions for older conversations are not reused. */
   get cacheKey(): string {
     return `${this.id}:${this.notes[this.notes.length - 1]?.id ?? this.notes.length}`;
+  }
+
+  /** True when nothing shown for this thread changed between two loads. */
+  sameAs(o: CrThread): boolean {
+    return (
+      this.cacheKey === o.cacheKey &&
+      this.file === o.file &&
+      this.line === o.line &&
+      this.outdated === o.outdated &&
+      this.resolved === o.resolved &&
+      this.resolvable === o.resolvable
+    );
   }
 
   get location(): string {

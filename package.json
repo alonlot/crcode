@@ -79,6 +79,12 @@
           "default": true,
           "description": "Load the merge request of the new branch when you check out another branch."
         },
+        "gitlabCr.auto.pollMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Check the merge request for new notes every N minutes while the VS Code window has focus. New notes get automatic suggestions too. 0 turns the check off."
+        },
         "gitlabCr.auto.suggestFixes": {
           "type": "boolean",
           "default": true,
@@ -146,6 +152,8 @@
       { "command": "gitlabCr.clearSelfReview", "title": "Clear Self Review Findings", "category": "GitLab CR", "icon": "$(clear-all)" },
       { "command": "gitlabCr.suggestFix", "title": "Suggest Fix (opencode)", "category": "GitLab CR", "icon": "$(lightbulb)" },
       { "command": "gitlabCr.applyFix", "title": "Apply Fix", "category": "GitLab CR", "icon": "$(check)" },
+      { "command": "gitlabCr.previewFix", "title": "Preview Fix in Diff Editor", "category": "GitLab CR", "icon": "$(diff)" },
+      { "command": "gitlabCr.applyFromPreview", "title": "Apply Fix", "category": "GitLab CR", "icon": "$(check)" },
       { "command": "gitlabCr.reply", "title": "Reply", "category": "GitLab CR", "icon": "$(comment)" },
       { "command": "gitlabCr.suggestReply", "title": "Suggest Reply (opencode)", "category": "GitLab CR", "icon": "$(sparkle)" },
       { "command": "gitlabCr.sendDraft", "title": "Send Reply", "category": "GitLab CR", "icon": "$(send)" },
@@ -169,6 +177,7 @@
       ],
       "view/item/context": [
         { "command": "gitlabCr.suggestFix", "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFile\\b/", "group": "inline@1" },
+        { "command": "gitlabCr.previewFix", "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFix\\b/", "group": "inline@2" },
         { "command": "gitlabCr.applyFix", "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFix\\b/", "group": "inline@2" },
         { "command": "gitlabCr.suggestReply", "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-gitlab\\b/", "group": "inline@3" },
         { "command": "gitlabCr.reply", "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-gitlab\\b/", "group": "inline@4" },
@@ -188,6 +197,7 @@
         { "command": "gitlabCr.reply", "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-gitlab\\b/", "group": "inline@1" }
       ],
       "comments/comment/title": [
+        { "command": "gitlabCr.previewFix", "when": "commentController == gitlabCr && comment == suggestion", "group": "inline@0" },
         { "command": "gitlabCr.applyFix", "when": "commentController == gitlabCr && comment == suggestion", "group": "inline@1" },
         { "command": "gitlabCr.sendDraft", "when": "commentController == gitlabCr && comment == draft", "group": "inline@1" },
         { "command": "gitlabCr.editDraft", "when": "commentController == gitlabCr && comment == draft", "group": "inline@2" },
@@ -197,7 +207,11 @@
         { "command": "gitlabCr.saveDraft", "when": "commentController == gitlabCr && comment == draft", "group": "inline@1" },
         { "command": "gitlabCr.cancelDraftEdit", "when": "commentController == gitlabCr && comment == draft", "group": "inline@2" }
       ],
+      "editor/title": [
+        { "command": "gitlabCr.applyFromPreview", "when": "isInDiffEditor && resourceScheme == gitlabcr-preview", "group": "navigation@1" }
+      ],
       "commandPalette": [
+        { "command": "gitlabCr.applyFromPreview", "when": "false" },
         { "command": "gitlabCr.applyFix", "when": "false" },
         { "command": "gitlabCr.sendDraft", "when": "false" },
         { "command": "gitlabCr.editDraft", "when": "false" },

@@ -2,16 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentManager, CrComment } from './comments';
-import { applyGrouped, prepareEdit, resolveInRoot } from './edits';
+import { applyGrouped, prepareEdit, previewTexts, resolveInRoot } from './edits';
 import * as git from './git';
 import { Discussion, GitLabClient, GitLabUser, MergeRequest } from './gitlab';
 import { CrThread, FixSuggestion } from './model';
 import { OpencodeRunner } from './opencode';
-import { numberLines, validateFixAnswer } from './parse';
+import { mapLine, numberLines, parseHunks, validateFixAnswer } from './parse';
 import { fixPrompt, replyPrompt, selfReviewPrompt } from './prompts';
 import { ThreadTree } from './tree';
 
 const TOKEN_KEY = 'gitlabCr.token';
+export const PREVIEW_SCHEME = 'gitlabcr-preview';
 const CACHE_KEY = 'gitlabCr.suggestionCache';
 const CACHE_DAYS = 14;
 const CONTEXT_LINES = 40;
@@ -43,6 +44,14 @@ export class Controller implements vscode.Disposable {
   private branchTimer?: NodeJS.Timeout;
   private autoRun?: vscode.CancellationTokenSource;
   private me?: { baseUrl: string; user: GitLabUser };
+  private lastLoad = 0;
+  private readonly pollTimer: NodeJS.Timeout;
+  /** Note IDs already seen per merge request, to report new notes from the periodic check. */
+  private readonly seenNotes = new Map<number, Set<number>>();
+  private readonly missingShas = new Set<string>();
+  /** Text shown on the right side of a fix preview, by preview URI. */
+  private readonly previews = new Map<string, { thread: CrThread; text: string }>();
+  private readonly previewChanged = new vscode.EventEmitter<vscode.Uri>();
   private gitlabThreads: CrThread[] = [];
   private selfThreads: CrThread[] = [];
   private root?: string;
@@ -58,10 +67,18 @@ export class Controller implements vscode.Disposable {
     this.opencode = new OpencodeRunner(output);
     this.comments = new CommentManager(() => this.root);
     this.treeView = vscode.window.createTreeView('gitlabCr.threads', { treeDataProvider: this.tree as any, showCollapseAll: true });
+    this.pollTimer = setInterval(() => this.poll(), 30_000);
+    ctx.subscriptions.push(
+      vscode.workspace.registerTextDocumentContentProvider(PREVIEW_SCHEME, {
+        onDidChange: this.previewChanged.event,
+        provideTextDocumentContent: (uri) => this.previews.get(uri.toString())?.text ?? '',
+      }),
+    );
   }
 
   dispose(): void {
     this.autoRun?.cancel();
+    clearInterval(this.pollTimer);
     this.headWatcher?.dispose();
     clearTimeout(this.branchTimer);
     this.comments.dispose();
@@ -206,21 +223,35 @@ export class Controller implements vscode.Disposable {
         const showResolved = vscode.workspace.getConfiguration('gitlabCr').get<boolean>('showResolved') ?? false;
         const discussions = s.mr ? await s.client.discussions(s.project, s.mr.iid) : [];
 
-        // Replace the old threads only after all data is loaded.
-        const previous = new Map(this.gitlabThreads.map((t) => [t.id, t]));
-        this.session = s;
-        this.gitlabThreads = discussions
+        const fresh = discussions
           .map((d) => toThread(d))
           .filter((t): t is CrThread => !!t && (showResolved || !t.resolved));
+        await this.mapToLocalLines(s, fresh);
+        const newNotes = s.mr ? this.countNewNotes(s.mr.iid, fresh, s.me) : 0;
+
+        // Change only the threads that changed, so open reply boxes and drafts being edited stay as they are.
+        const previous = new Map(this.gitlabThreads.map((t) => [t.id, t]));
         const cache = this.readCache();
-        for (const t of this.gitlabThreads) {
-          // Keep suggestions and drafts made before the refresh or before VS Code was restarted.
+        const added: CrThread[] = [];
+        this.session = s;
+        this.gitlabThreads = fresh.map((t) => {
           const old = previous.get(t.id);
+          const shown = !!old?.vsThread || !old?.file; // a general note has no editor thread
+          if (old && old.sameAs(t) && shown) {
+            previous.delete(t.id);
+            return old;
+          }
+          // Keep suggestions and drafts made before the refresh or before VS Code was restarted.
           const saved: Omit<CacheEntry, 'at'> | undefined = old && old.cacheKey === t.cacheKey ? old : cache[t.cacheKey];
           t.suggestion = saved?.suggestion;
           t.draftReply = saved?.draftReply;
           t.skipAutoFix = saved?.skipAutoFix ?? false;
           t.skipAutoReply = saved?.skipAutoReply ?? false;
+          added.push(t);
+          return t;
+        });
+        for (const gone of previous.values()) {
+          this.comments.remove(gone);
         }
         if (!s.mr) {
           this.treeView.message = `No open merge request for branch '${branch}' in ${s.project}.`;
@@ -228,12 +259,87 @@ export class Controller implements vscode.Disposable {
           const open = this.gitlabThreads.filter((t) => !t.resolved).length;
           this.treeView.message = `!${s.mr.iid} ${s.mr.title} (${open} open note${open === 1 ? '' : 's'})`;
         }
-        this.comments.clear('gitlab');
-        this.comments.show(this.gitlabThreads);
+        this.comments.show(added);
         this.tree.setThreads(this.threads);
+        this.lastLoad = Date.now();
+        if (newNotes) {
+          void vscode.window
+            .showInformationMessage(`${newNotes} new review note(s) on !${s.mr!.iid}.`, 'Show')
+            .then((c) => c && vscode.commands.executeCommand('gitlabCr.threads.focus'));
+        }
       },
     );
     this.startAutoSuggest();
+  }
+
+  /**
+   * GitLab gives line numbers of the pushed commit. Moves them to the lines of the local files
+   * (with `git diff <commit>` for each file) and marks notes whose line was changed as outdated.
+   */
+  private async mapToLocalLines(s: Session, threads: CrThread[]): Promise<void> {
+    const remote = vscode.workspace.getConfiguration('gitlabCr').get<string>('remoteName') || 'origin';
+    const shas = new Map<string, boolean>();
+    let fetched = false;
+    const hasSha = async (sha: string) => {
+      if (!shas.has(sha)) {
+        let ok = await git.hasCommit(s.root, sha);
+        if (!ok && s.mr && !fetched && !this.missingShas.has(sha)) {
+          // Someone else may have pushed to the branch. Fetch at most once per load.
+          fetched = true;
+          await git.fetchBranch(s.root, remote, s.mr.source_branch).catch((err) =>
+            this.output.appendLine(`Cannot fetch ${s.mr!.source_branch}: ${(err as Error).message}`),
+          );
+          ok = await git.hasCommit(s.root, sha);
+        }
+        if (!ok) {
+          this.missingShas.add(sha); // for example a commit removed by a force push
+        }
+        shas.set(sha, ok);
+      }
+      return shas.get(sha)!;
+    };
+    const diffs = new Map<string, Promise<string>>();
+    for (const t of threads) {
+      if (!t.file || !t.gitlabLine || !t.positionSha) {
+        continue;
+      }
+      if (!(await hasSha(t.positionSha))) {
+        this.output.appendLine(`Commit ${t.positionSha.slice(0, 8)} is not available locally; ${t.location} is not moved.`);
+        continue;
+      }
+      const key = `${t.positionSha}:${t.file}`;
+      if (!diffs.has(key)) {
+        diffs.set(key, git.diffFileSince(s.root, t.positionSha, t.file).catch(() => ''));
+      }
+      const mapped = mapLine(parseHunks(await diffs.get(key)!), t.gitlabLine);
+      t.line = mapped.line;
+      t.outdated = mapped.outdated;
+    }
+  }
+
+  /** Counts notes by other people that were not seen in the last load of the same merge request. */
+  private countNewNotes(iid: number, threads: CrThread[], me: GitLabUser | undefined): number {
+    const ids = threads.flatMap((t) => t.notes.filter((n) => n.authorId !== me?.id).map((n) => n.id ?? -1));
+    const seen = this.seenNotes.get(iid);
+    this.seenNotes.set(iid, new Set([...(seen ?? []), ...ids]));
+    return seen ? ids.filter((id) => !seen.has(id)).length : 0;
+  }
+
+  /** Periodic check for new notes while the VS Code window has focus. */
+  private poll(): void {
+    const minutes = vscode.workspace.getConfiguration('gitlabCr.auto').get<number>('pollMinutes', 5);
+    if (!minutes || minutes <= 0 || !this.session || this.refreshing || !vscode.window.state.focused) {
+      return;
+    }
+    if (Date.now() - this.lastLoad < minutes * 60_000) {
+      return;
+    }
+    this.lastLoad = Date.now(); // do not try again at once when the load fails
+    this.refresh().catch((err) => {
+      if (!(err instanceof vscode.CancellationError)) {
+        this.output.appendLine(`Periodic check failed: ${(err as Error).message}`);
+      }
+    });
   }
 
   private async currentUser(s: Session): Promise<GitLabUser | undefined> {
@@ -305,7 +411,8 @@ export class Controller implements vscode.Disposable {
     const open = this.gitlabThreads.filter((t) => !t.resolved && !this.isMine(t));
     const jobs: { t: CrThread; kind: 'fix' | 'reply' }[] = [];
     for (const t of open) {
-      if (doFix && t.file && t.line && !t.suggestion && !t.skipAutoFix) {
+      // An outdated note is often already fixed; its fix is made only on request.
+      if (doFix && t.file && t.line && !t.outdated && !t.suggestion && !t.skipAutoFix) {
         jobs.push({ t, kind: 'fix' });
       }
       if (doReply && t.draftReply === undefined && !t.skipAutoReply) {
@@ -347,15 +454,15 @@ export class Controller implements vscode.Disposable {
         if (cts.token.isCancellationRequested || (!fixes && !replies && !failed)) {
           return;
         }
-        const choice = await vscode.window.showInformationMessage(
-          `opencode prepared ${fixes} fix(es) and ${replies} reply draft(s)` +
-            (mr ? ` for !${mr.iid}` : '') +
-            (failed ? `. ${failed} failed (see the "GitLab CR" output).` : '.'),
-          'Show',
-        );
-        if (choice === 'Show') {
-          await vscode.commands.executeCommand('gitlabCr.threads.focus');
-        }
+        // Not awaited: the status bar progress must stop now, not when the user closes the message.
+        void vscode.window
+          .showInformationMessage(
+            `opencode prepared ${fixes} fix(es) and ${replies} reply draft(s)` +
+              (mr ? ` for !${mr.iid}` : '') +
+              (failed ? `. ${failed} failed (see the "GitLab CR" output).` : '.'),
+            'Show',
+          )
+          .then((choice) => choice && vscode.commands.executeCommand('gitlabCr.threads.focus'));
       },
     );
   }
@@ -486,6 +593,57 @@ export class Controller implements vscode.Disposable {
     t.skipAutoFix = true;
     this.update(t);
     vscode.window.setStatusBarMessage('$(check) Fix applied. Review and save the file.', 5000);
+  }
+
+  /** Shows the suggested fix in the diff editor: current file on the left, file after the fix on the right. */
+  async previewFix(arg: unknown): Promise<void> {
+    const t = await this.threadFrom(arg);
+    if (!t) {
+      return;
+    }
+    if (!t.suggestion) {
+      await this.suggestFix(t);
+    }
+    if (!t.suggestion?.edits.length) {
+      return;
+    }
+    const root = this.root!;
+    for (const [file, text] of await previewTexts(root, t.suggestion.edits)) {
+      const right = vscode.Uri.from({ scheme: PREVIEW_SCHEME, path: '/' + file, query: t.id });
+      this.previews.set(right.toString(), { thread: t, text });
+      this.previewChanged.fire(right);
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        vscode.Uri.file(path.join(root, file)),
+        right,
+        `${path.basename(file)} ↔ opencode fix`,
+        { preview: true },
+      );
+    }
+  }
+
+  /** "Apply Fix" in the title of a preview diff editor. */
+  async applyFromPreview(uri?: vscode.Uri): Promise<void> {
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const input = tab?.input;
+    const right = uri?.scheme === PREVIEW_SCHEME ? uri : input instanceof vscode.TabInputTextDiff ? input.modified : undefined;
+    const entry = right && this.previews.get(right.toString());
+    if (!entry) {
+      throw new Error('This editor is not an opencode fix preview.');
+    }
+    await this.applyFix(entry.thread);
+    if (!entry.thread.suggestion) {
+      // Applied: close the previews of this fix.
+      for (const [key, p] of [...this.previews]) {
+        if (p.thread === entry.thread) {
+          this.previews.delete(key);
+        }
+      }
+      const tabs = vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .filter((x) => x.input instanceof vscode.TabInputTextDiff && x.input.modified.scheme === PREVIEW_SCHEME && x.input.modified.query === entry.thread.id);
+      await vscode.window.tabGroups.close(tabs);
+    }
   }
 
   /** "Fix CR for all page": makes and applies fixes for every open note of the merge request. */
@@ -874,10 +1032,12 @@ function toThread(d: Discussion): CrThread | undefined {
   const pos = notes[0].position;
   const file = pos && pos.position_type === 'text' ? pos.new_path ?? pos.old_path : undefined;
   const line = pos ? pos.new_line ?? pos.old_line ?? undefined : undefined;
+  // Only lines on the new side can be moved to the local file.
+  const mappable = !!file && !!pos?.new_line && !!pos?.head_sha;
   const resolvableNotes = notes.filter((n) => n.resolvable);
   const resolvable = resolvableNotes.length > 0;
   const resolved = resolvable && resolvableNotes.every((n) => n.resolved);
-  return new CrThread(
+  const thread = new CrThread(
     d.id,
     'gitlab',
     notes.map((n) => ({
@@ -894,6 +1054,11 @@ function toThread(d: Discussion): CrThread | undefined {
     resolved,
     d.id,
   );
+  if (mappable) {
+    thread.positionSha = pos!.head_sha;
+    thread.gitlabLine = pos!.new_line!;
+  }
+  return thread;
 }
 
 /** Runs `fn` for each item, at most `concurrency` at a time, until the token is cancelled. */

@@ -92,7 +92,12 @@ export class CommentManager implements vscode.Disposable {
       const uri = vscode.Uri.file(path.join(root, t.file));
       const line = Math.max(0, t.line - 1);
       const vs = this.controller.createCommentThread(uri, new vscode.Range(line, 0, line, 0), []);
-      vs.label = t.source === 'self' ? `Self review${t.severity ? ' · ' + t.severity : ''}` : 'GitLab CR';
+      vs.label =
+        t.source === 'self'
+          ? `Self review${t.severity ? ' · ' + t.severity : ''}`
+          : t.outdated
+            ? `GitLab CR · outdated (the code changed, was line ${t.gitlabLine})`
+            : 'GitLab CR';
       vs.collapsibleState = t.resolved
         ? vscode.CommentThreadCollapsibleState.Collapsed
         : vscode.CommentThreadCollapsibleState.Expanded;

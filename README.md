@@ -18,6 +18,7 @@ Self review findings show the same way, with the label "Self review" and the sev
 | --- | --- | --- |
 | **Refresh CR Notes** | GitLab CR view title | Finds the open merge request for the current branch and loads its discussions. Notes on code lines show as comment threads in the editor. General notes show in the view. |
 | **Suggest Fix (opencode)** 💡 | Comment thread title, view item | Sends the note and the code around it to opencode. The suggested change shows as a diff comment in the thread. |
+| **Preview Fix** ⊞ | Suggestion comment, view item | Opens the VS Code diff editor: your file on the left, the file after the fix on the right. Click ✓ in the editor title to apply it. |
 | **Apply Fix** ✓ | Suggestion comment, thread title, view item | Applies the suggested change to the file (you review and save). If the file changed after the suggestion, the extension finds the original code again; if it cannot, it tells you to ask for a new suggestion. |
 | **Reply** | Reply box under each thread, view item | Posts your reply to the GitLab discussion. |
 | **Suggest Reply (opencode)** ✨ | Thread title, view item | opencode writes a reply draft. Use **Edit**, **Send** or **Discard** on the draft. |
@@ -31,7 +32,8 @@ The extension works without a click in these cases:
 
 1. **When VS Code opens** (if a token is saved), it loads the merge request of the current branch.
 2. **When you check out another branch**, it loads the merge request of that branch. A commit on the same branch does not reload it.
-3. **After each load**, opencode makes these in the background (status bar: "opencode: preparing CR suggestions"):
+3. **Every 5 minutes** (only while the VS Code window has focus), it checks the merge request for new notes. When there are new notes from other people, a message tells you. Only the changed discussions are updated in the editor, so a reply you are typing is not lost.
+4. **After each load**, opencode makes these in the background (status bar: "opencode: preparing CR suggestions"):
    - a suggested fix for each open note on a code line,
    - a reply draft for each open note.
    When it is done, a message tells you how many fixes and drafts are ready.
@@ -46,6 +48,20 @@ The automatic run skips a note when:
 Results are kept per workspace. Thus a restart or a switch back to a branch does not ask opencode again. When a reviewer adds a new reply to a discussion, that discussion gets new suggestions.
 
 **Cost:** each new note can use two opencode requests (one fix, one reply). On a large merge request, set `gitlabCr.auto.suggestFixes` or `gitlabCr.auto.suggestReplies` to `false` if you do not want this.
+
+### Line numbers when your local code is different
+
+GitLab gives the line number in the commit that the reviewer saw. The extension compares that commit with your local files (`git diff <commit> -- <file>`) and moves each note to the same code in your file. For example, if you added 2 lines above the note, the note moves down 2 lines.
+
+If the line of the note itself was changed or deleted, the note shows as **outdated** ("GitLab CR · outdated (the code changed, was line N)"). The automatic run does not make a fix for an outdated note, because often the note is already fixed. You can still click **Suggest Fix**. opencode then checks first whether the current code already solves the note.
+
+If the commit is not in your local repository, the extension runs `git fetch <remote> <source branch>` one time. This changes only the remote-tracking branch, not your branch or your files. If the commit is still not available (for example after a force push), the note stays on the GitLab line number.
+
+### Fix preview
+
+**Preview Fix** opens the diff editor. Click ✓ in its title to apply the fix.
+
+![Fix preview in the diff editor](docs/fix-preview.png)
 
 ## Requirements
 
@@ -80,6 +96,7 @@ The extension reads the GitLab URL and project path from the remote. Set them yo
 | `gitlabCr.opencode.agent` | `plan` | The `plan` agent can read the repository but cannot edit it. The extension makes the edits itself, only after you click **Apply**. |
 | `gitlabCr.opencode.timeoutSeconds` | `300` | Limit for one request. |
 | `gitlabCr.auto.refreshOnBranchChange` | `true` | Load the merge request of the new branch after a checkout. |
+| `gitlabCr.auto.pollMinutes` | `5` | Check for new notes every N minutes while the window has focus. `0` turns it off. |
 | `gitlabCr.auto.suggestFixes` | `true` | Make fix suggestions in the background after each load. |
 | `gitlabCr.auto.suggestReplies` | `true` | Make reply drafts in the background after each load. |
 | `gitlabCr.fixAll.concurrency` | `2` | Parallel opencode requests (Fix All and automatic mode). |
@@ -91,7 +108,7 @@ The extension runs `opencode run --format json --agent <agent> [--model <model>]
 
 ## Limits
 
-- Line numbers come from the merge request diff. If your local file is different from the pushed version, a note can show on a different line.
+- Line numbers are moved with the file on disk. Changes that are not saved are not included until the next load.
 - Notes on removed lines show on the same line number of the new file.
 - The self review diff does not include untracked files. Use `git add -N <file>` to include a new file.
 - **Post to Merge Request** puts the finding on the line only when that line is part of the pushed diff. If GitLab rejects the position, it posts a general note with the file and line.

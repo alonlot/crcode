@@ -90,3 +90,22 @@ export async function mergeBase(root: string, baseBranch: string, remote: string
 export function diffSince(root: string, base: string): Promise<string> {
   return git(root, ['diff', '--no-color', '--unified=3', base, '--']);
 }
+
+export async function hasCommit(root: string, sha: string): Promise<boolean> {
+  try {
+    await git(root, ['cat-file', '-e', `${sha}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Fetches a branch into the remote-tracking refs only; it does not change local branches or files. */
+export async function fetchBranch(root: string, remote: string, branch: string): Promise<void> {
+  await git(root, ['fetch', '--quiet', '--no-tags', remote, branch]);
+}
+
+/** Diff from a commit to the working tree for one file, with no context lines. */
+export function diffFileSince(root: string, sha: string, file: string): Promise<string> {
+  return git(root, ['diff', '--no-color', '--unified=0', sha, '--', file]);
+}

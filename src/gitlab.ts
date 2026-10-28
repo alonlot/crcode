@@ -30,6 +30,7 @@ export interface NotePosition {
   old_path?: string;
   new_line?: number | null;
   old_line?: number | null;
+  head_sha?: string;
 }
 
 export interface Note {

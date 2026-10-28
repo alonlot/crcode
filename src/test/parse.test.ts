@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from 'node:test';
 import { parseRemote, stripBasePath } from '../git';
-import { extractJson, findOverlaps, numberLines, parseOpencodeEvents, validateFixAnswer } from '../parse';
+import { extractJson, findOverlaps, mapLine, numberLines, parseHunks, parseOpencodeEvents, validateFixAnswer } from '../parse';
 
 test('parseRemote handles scp, ssh and https remotes', () => {
   assert.deepStrictEqual(parseRemote('git@gitlab.corp.local:group/sub/proj.git'), {
@@ -59,4 +59,28 @@ test('findOverlaps rejects later overlapping ranges only', () => {
 
 test('numberLines pads line numbers', () => {
   assert.strictEqual(numberLines(['a', 'b'], 9), ' 9| a\n10| b');
+});
+
+test('mapLine follows inserts, deletes and changes', () => {
+  const diff = [
+    'diff --git a/f b/f',
+    '@@ -0,0 +1,2 @@', // 2 lines inserted at the top
+    '+a',
+    '+b',
+    '@@ -5,2 +7 @@', // old 5-6 replaced by one new line 7
+    '-x',
+    '-y',
+    '+z',
+    '@@ -10 +10,0 @@', // old line 10 deleted (git gives the new line before the deleted block)
+    '-gone',
+  ].join('\n');
+  const hunks = parseHunks(diff);
+  assert.deepStrictEqual(hunks[1], { oldStart: 5, oldCount: 2, newStart: 7, newCount: 1 });
+  assert.deepStrictEqual(mapLine(hunks, 1), { line: 3, outdated: false });
+  assert.deepStrictEqual(mapLine(hunks, 4), { line: 6, outdated: false });
+  assert.deepStrictEqual(mapLine(hunks, 6), { line: 7, outdated: true });
+  assert.deepStrictEqual(mapLine(hunks, 7), { line: 8, outdated: false });
+  assert.deepStrictEqual(mapLine(hunks, 10), { line: 11, outdated: true });
+  assert.deepStrictEqual(mapLine(hunks, 11), { line: 11, outdated: false });
+  assert.deepStrictEqual(mapLine([], 4), { line: 4, outdated: false });
 });

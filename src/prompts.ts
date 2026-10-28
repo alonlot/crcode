@@ -4,6 +4,9 @@ const RULES =
   'You are helping a developer handle code review (CR) notes from a GitLab merge request. ' +
   'You may read files in the repository for more context, but you must NOT modify, create or delete any file and must NOT run commands that change the repository.';
 
+const OUTDATED =
+  'NOTE: the code at this line was changed after the review note was written. Check if the current code already addresses the note. If it does, return no edits (or say so in the reply).';
+
 function conversation(thread: CrThread): string {
   return thread.notes.map((n) => `--- ${n.author}${n.createdAt ? ' (' + n.createdAt + ')' : ''}:\n${n.body}`).join('\n\n');
 }
@@ -15,7 +18,7 @@ Task: propose a code change that addresses the review note below.
 
 File: ${thread.file}
 Note is on line: ${thread.line}
-
+${thread.outdated ? OUTDATED + '\n' : ''}
 Review conversation:
 ${conversation(thread)}
 
@@ -44,7 +47,7 @@ export function replyPrompt(thread: CrThread, codeContext: string | undefined): 
   return `${RULES}
 
 Task: write a reply to the review conversation below, as the author of the merge request.
-${thread.file ? `\nThe note is on ${thread.location}.` : ''}
+${thread.file ? `\nThe note is on ${thread.location}.` : ''}${thread.outdated ? '\n' + OUTDATED : ''}
 ${codeContext ? `\nCode around the note:\n${codeContext}\n` : ''}
 Review conversation:
 ${conversation(thread)}

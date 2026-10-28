@@ -60,7 +60,7 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
     }
     const t = element;
     const item = new vscode.TreeItem(t.title, vscode.TreeItemCollapsibleState.Collapsed);
-    item.description = t.location;
+    item.description = t.outdated ? `${t.location} (outdated)` : t.location;
     item.tooltip = new vscode.MarkdownString(`**${t.location}**\n\n${t.notes.map((n) => `**${n.author}:** ${n.body}`).join('\n\n')}`);
     item.contextValue = t.contextValue;
     item.iconPath = new vscode.ThemeIcon(
