@@ -1,0 +1,68 @@
+<idea-plugin>
+    <id>crcode.gitlab-cr-opencode</id>
+    <name>GitLab CR + opencode</name>
+    <vendor>crcode</vendor>
+    <description><![CDATA[
+    Shows the code review notes and the pipeline of your self-hosted GitLab merge request inside CLion
+    (and the other JetBrains IDEs), and uses <a href="https://opencode.ai">opencode</a> to suggest fixes and replies,
+    explain failed CI jobs, run a self code review, and write commit messages in your format.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="GitLab CR" anchor="right" icon="/icons/gitlabCr.svg" factoryClass="crcode.ui.CrToolWindowFactory"/>
+        <postStartupActivity implementation="crcode.CrStartup"/>
+        <statusBarWidgetFactory id="gitlabCr.pipeline" implementation="crcode.ui.PipelineWidgetFactory" order="first"/>
+        <projectConfigurable parentId="tools" instance="crcode.settings.CrConfigurable" id="crcode.settings" displayName="GitLab CR + opencode"/>
+        <notificationGroup id="GitLab CR" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <action id="GitLabCr.Refresh" class="crcode.actions.RefreshAction" text="Refresh CR Notes" description="Load the merge request of the current branch" icon="AllIcons.Actions.Refresh"/>
+        <action id="GitLabCr.FixAll" class="crcode.actions.FixAllAction" text="Fix All CR Notes" description="Make and apply opencode fixes for all open notes" icon="AllIcons.Actions.QuickfixBulb"/>
+        <action id="GitLabCr.SelfReview" class="crcode.actions.SelfReviewAction" text="Self Code Review" description="Review your diff with opencode" icon="AllIcons.General.InspectionsEye"/>
+        <action id="GitLabCr.ClearSelfReview" class="crcode.actions.ClearSelfReviewAction" text="Clear Self Review Findings" icon="AllIcons.Actions.GC"/>
+        <action id="GitLabCr.ShowPipeline" class="crcode.actions.ShowPipelineAction" text="Show Pipeline Graph" icon="AllIcons.Actions.Lightning"/>
+        <action id="GitLabCr.RefreshPipeline" class="crcode.actions.RefreshPipelineAction" text="Refresh Pipeline Status"/>
+        <action id="GitLabCr.FixPipeline" class="crcode.actions.FixPipelineAction" text="Explain and Fix Failed Jobs (opencode)"/>
+        <action id="GitLabCr.OpenMR" class="crcode.actions.OpenMergeRequestAction" text="Open Merge Request in Browser" icon="AllIcons.Ide.External_link_arrow"/>
+        <action id="GitLabCr.SetToken" class="crcode.actions.SetTokenAction" text="Set GitLab Access Token…" icon="AllIcons.Nodes.SecurityRole"/>
+        <action id="GitLabCr.ShowLog" class="crcode.actions.ShowLogAction" text="Show GitLab CR Log" icon="AllIcons.Debugger.Console"/>
+        <action id="GitLabCr.Settings" class="crcode.actions.OpenSettingsAction" text="GitLab CR Settings…" icon="AllIcons.General.Settings"/>
+
+        <group id="GitLabCr.Toolbar">
+            <reference ref="GitLabCr.Refresh"/>
+            <reference ref="GitLabCr.FixAll"/>
+            <reference ref="GitLabCr.SelfReview"/>
+            <reference ref="GitLabCr.ShowPipeline"/>
+            <reference ref="GitLabCr.OpenMR"/>
+            <separator/>
+            <reference ref="GitLabCr.ClearSelfReview"/>
+            <reference ref="GitLabCr.SetToken"/>
+            <reference ref="GitLabCr.ShowLog"/>
+            <reference ref="GitLabCr.Settings"/>
+        </group>
+
+        <group id="GitLabCr.ToolsMenu" text="GitLab CR" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <reference ref="GitLabCr.Refresh"/>
+            <reference ref="GitLabCr.FixAll"/>
+            <reference ref="GitLabCr.SelfReview"/>
+            <reference ref="GitLabCr.ClearSelfReview"/>
+            <separator/>
+            <reference ref="GitLabCr.ShowPipeline"/>
+            <reference ref="GitLabCr.RefreshPipeline"/>
+            <reference ref="GitLabCr.FixPipeline"/>
+            <separator/>
+            <reference ref="GitLabCr.OpenMR"/>
+            <reference ref="GitLabCr.SetToken"/>
+            <reference ref="GitLabCr.ShowLog"/>
+        </group>
+
+        <action id="GitLabCr.WriteCommitMessage" class="crcode.actions.CommitMessageAction">
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="first"/>
+        </action>
+    </actions>
+</idea-plugin>

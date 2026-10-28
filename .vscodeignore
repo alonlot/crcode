@@ -5,3 +5,5 @@ out/test/**
 tsconfig.json
 node_modules/**
 docs/**
+clion/**
+.vscode-test/**

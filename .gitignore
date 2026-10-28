@@ -3,3 +3,7 @@ out/
 *.vsix
 .vscode-test/
 *.vsix
+clion/build/
+clion/.gradle/
+clion/.intellijPlatform/
+clion/.kotlin/
