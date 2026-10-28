@@ -21,8 +21,6 @@ import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
 import javax.swing.JComponent
-import javax.swing.JFrame
-import javax.swing.SwingUtilities
 
 /**
  * Runs the plugin in the headless IDE test platform against a mock GitLab and a fake opencode:
@@ -57,7 +55,7 @@ class PluginIntegrationTest : HeavyPlatformTestCase() {
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(root))?.refresh(false, true)
 
         // Fake opencode: a shell wrapper that runs the Java single-file program with the test JVM.
-        ocLog = File.createTempFile("oc", ".log")
+        ocLog = File.createTempFile("opencode-calls", ".log")
         val java = File(System.getProperty("java.home"), "bin/java").path
         val src = File(javaClass.getResource("/FakeOpencode.java")!!.toURI()).path
         val wrapper = File.createTempFile("opencode", ".sh")
@@ -81,6 +79,8 @@ class PluginIntegrationTest : HeavyPlatformTestCase() {
 
     override fun tearDown() {
         try {
+            // CLion's bundled plugins turn this option on at startup; the framework check expects the default.
+            com.intellij.codeInsight.CodeInsightSettings.getInstance().AUTO_POPUP_JAVADOC_INFO = false
             mock.stop()
         } finally {
             super.tearDown()
@@ -94,9 +94,6 @@ class PluginIntegrationTest : HeavyPlatformTestCase() {
 
     private fun shot(c: JComponent, name: String, w: Int = 1300, h: Int = 720) {
         // Render the real Swing component off screen.
-        val frame = JFrame()
-        frame.contentPane.add(c)
-        frame.setSize(w, h)
         c.setSize(w, h)
         layout(c)
         val img = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
@@ -104,7 +101,6 @@ class PluginIntegrationTest : HeavyPlatformTestCase() {
         c.paint(g)
         g.dispose()
         ImageIO.write(img, "png", File(shots, name))
-        frame.dispose()
     }
 
     private fun layout(c: Component) {
@@ -149,7 +145,7 @@ class PluginIntegrationTest : HeavyPlatformTestCase() {
         } finally {
             EditorFactory.getInstance().releaseEditor(editor)
         }
-        println("IT UI ok")
+        println("IT ui ok")
 
         // 3. Preview and apply the fix; send the draft reply.
         service.previewFix(d1)
@@ -163,8 +159,10 @@ class PluginIntegrationTest : HeavyPlatformTestCase() {
         println("IT apply + reply ok")
 
         // 4. Local change: two lines on top -> notes move down; the changed line is outdated. No new opencode calls for handled notes.
-        File(root, "src/a.ts").writeText("// new 1\n// new 2\n" + File(root, "src/a.ts").readText())
-        LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(root, "src/a.ts"))!!.refresh(false, false)
+        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) { doc.insertString(0, "// new 1\n// new 2\n") }
+        FileDocumentManager.getInstance().saveDocument(doc)
+        val disk = File(root, "src/a.ts").readText()
+        assertTrue("disk:\n$disk\ndoc:\n${doc.text}\nsame doc: ${service.document(root, "src/a.ts") === doc}", disk.startsWith("// new 1\n// new 2\n// a\nconst v2 = 'fixed';"))
         val before = calls().size
         service.loadBlocking(null)
         val byId = service.gitlabThreads.associateBy { it.id }

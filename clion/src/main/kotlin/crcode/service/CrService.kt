@@ -15,7 +15,6 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
@@ -71,6 +70,7 @@ import crcode.gitlab.GitLabUser
 import crcode.gitlab.Job
 import crcode.gitlab.MergeRequest
 import crcode.gitlab.Pipeline
+import crcode.opencode.OpencodeNotFoundException
 import crcode.opencode.OpencodeRunner
 import crcode.settings.CrCache
 import crcode.settings.CrProjectSettings
@@ -160,10 +160,38 @@ class CrService(val project: Project) : Disposable {
     private val missingShas = ConcurrentHashMap.newKeySet<String>()
     private var me: Pair<String, GitLabUser>? = null
     private val refreshing = AtomicBoolean(false)
+    /** Each load gets a number; the results of an older load never replace the results of a newer one. */
+    private val loadSeq = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var appliedSeq = 0L
     @Volatile private var refreshQueued = false
     @Volatile private var autoIndicator: ProgressIndicator? = null
     @Volatile private var pipelineIndicator: ProgressIndicator? = null
     private var timer: ScheduledFuture<*>? = null
+    /** The opencode path that could not be started; the automatic runs wait until the path changes. */
+    @Volatile private var missingOpencode: String? = null
+
+    /** A successful answer means opencode works again (for example after it was installed). */
+    private fun askOpencode(cwd: String, prompt: String, indicator: ProgressIndicator?) =
+        opencode.askJson(cwd, prompt, indicator).also { missingOpencode = null }
+
+    private fun opencodeUsable(): Boolean {
+        val missing = missingOpencode ?: return true
+        return missing != settings().opencodePath.ifBlank { "opencode" }
+    }
+
+    /** Tells the user once, and stops the background run: the other jobs would fail the same way. */
+    private fun onOpencodeMissing(e: OpencodeNotFoundException, indicator: ProgressIndicator) {
+        indicator.cancel()
+        synchronized(this) {
+            if (missingOpencode == e.path) return
+            missingOpencode = e.path
+        }
+        notify(
+            e.message + " The automatic suggestions are off until you change the path.",
+            NotificationType.WARNING,
+            "Open Settings" to { com.intellij.openapi.options.ShowSettingsUtil.getInstance().showSettingsDialog(project, "GitLab CR + opencode") },
+        )
+    }
     /** For tests: the diff request of the last preview. */
     @Volatile var lastPreview: Pair<CrThread, Map<String, String>>? = null
 
@@ -382,6 +410,7 @@ class CrService(val project: Project) : Disposable {
 
     /** Loads the notes and the pipeline. Blocks; public for tests. */
     fun loadBlocking(indicator: ProgressIndicator?) {
+        val seq = loadSeq.incrementAndGet()
         loading = true
         fireChanged()
         try {
@@ -399,7 +428,12 @@ class CrService(val project: Project) : Disposable {
             mapToLocalLines(s, fresh)
             val newNotes = s.mr?.let { countNewNotes(it.iid, fresh, s.me) } ?: 0
             val cache = CrCache.of(project).state.entries
-            onEdt {
+            val applied = onEdt {
+                if (seq < appliedSeq) {
+                    log("A newer load finished first; the results of load $seq are not used.")
+                    return@onEdt false
+                }
+                appliedSeq = seq
                 val previous = gitlabThreads.associateBy { it.id }
                 session = s
                 gitlabThreads = fresh.map { t ->
@@ -424,7 +458,9 @@ class CrService(val project: Project) : Disposable {
                     "!${mr.iid} ${mr.title} ($open open note${if (open == 1) "" else "s"})"
                 }
                 lastLoad = System.currentTimeMillis()
+                true
             }
+            if (!applied) return
             if (newNotes > 0) {
                 notify("$newNotes new review note(s) on !${s.mr!!.iid}.", NotificationType.INFORMATION, "Show" to { each { it.changed() } })
             }
@@ -433,7 +469,7 @@ class CrService(val project: Project) : Disposable {
             loading = false
             fireChanged()
         }
-        startAutoSuggest()
+        if (seq == appliedSeq) startAutoSuggest()
     }
 
     private fun currentUser(s: Session): GitLabUser? {
@@ -539,7 +575,7 @@ class CrService(val project: Project) : Disposable {
             if (s.suggestFixes && t.file != null && t.line != null && !t.outdated && t.suggestion == null && !t.skipAutoFix) jobs.add(t to true)
             if (s.suggestReplies && t.draftReply == null && !t.skipAutoReply) jobs.add(t to false)
         }
-        if (jobs.isEmpty()) return
+        if (jobs.isEmpty() || !opencodeUsable()) return
         val mr = session?.mr
         background("opencode: preparing CR suggestions") { indicator ->
             autoIndicator = indicator
@@ -557,6 +593,8 @@ class CrService(val project: Project) : Disposable {
                     ui { update(t) }
                 } catch (e: ProcessCanceledException) {
                     throw e
+                } catch (e: OpencodeNotFoundException) {
+                    onOpencodeMissing(e, indicator)
                 } catch (e: Exception) {
                     synchronized(this) { failed++ }
                     log("Automatic ${if (isFix) "fix" else "reply"} for ${t.location} failed: ${e.message}")
@@ -575,6 +613,7 @@ class CrService(val project: Project) : Disposable {
 
     /** Runs `fn` for each item, at most `concurrency` at a time, until the indicator is cancelled. */
     private fun <T> runPool(items: List<T>, concurrency: Int, indicator: ProgressIndicator, fn: (T) -> Unit) {
+        indicator.isIndeterminate = false
         val pool = AppExecutorUtil.createBoundedApplicationPoolExecutor("GitLabCr", maxOf(1, concurrency))
         val futures = items.map { item ->
             pool.submit(Callable {
@@ -613,11 +652,11 @@ class CrService(val project: Project) : Disposable {
 
     fun document(root: String, rel: String): Document {
         val vf = virtualFile(root, rel)
-        return ReadAction.compute<Document?, RuntimeException> { FileDocumentManager.getInstance().getDocument(vf) }
+        return ApplicationManager.getApplication().runReadAction(com.intellij.openapi.util.Computable { FileDocumentManager.getInstance().getDocument(vf) })
             ?: throw UserException("Cannot open $rel as text")
     }
 
-    private fun text(doc: Document): String = ReadAction.compute<String, RuntimeException> { doc.text }
+    private fun text(doc: Document): String = ApplicationManager.getApplication().runReadAction(com.intellij.openapi.util.Computable { doc.text })
 
     private fun root(): String = session?.root ?: repoRoot()
 
@@ -631,7 +670,7 @@ class CrService(val project: Project) : Disposable {
         val start = maxOf(1, line - CONTEXT_LINES)
         val end = minOf(lines.size, line + CONTEXT_LINES)
         val prompt = fixPrompt(t, numberLines(lines.subList(start - 1, end), start), start, end)
-        val answer = validateFixAnswer(opencode.askJson(root, prompt, indicator))
+        val answer = validateFixAnswer(askOpencode(root, prompt, indicator))
         val edits = answer.edits.map { e -> prepareEdit(text(document(root, e.file)), e) }
         t.suggestion = FixSuggestion(answer.explanation, edits)
     }
@@ -761,6 +800,9 @@ class CrService(val project: Project) : Disposable {
                     ui { update(t) }
                 } catch (e: ProcessCanceledException) {
                     throw e
+                } catch (e: OpencodeNotFoundException) {
+                    indicator.cancel()
+                    ui { error(e, "Fix All") }
                 } catch (e: Exception) {
                     errors.add("${t.location}: ${e.message}")
                 }
@@ -850,7 +892,7 @@ class CrService(val project: Project) : Disposable {
                 // the file may not exist locally; opencode can still answer from the conversation
             }
         }
-        val answer = opencode.askJson(root, replyPrompt(t, context), indicator)
+        val answer = askOpencode(root, replyPrompt(t, context), indicator)
         val reply = answer.takeIf { it.isJsonObject }?.asJsonObject?.str("reply")?.trim()
         if (reply.isNullOrEmpty()) throw UserException("opencode returned an empty reply.")
         t.draftReply = reply
@@ -938,7 +980,7 @@ class CrService(val project: Project) : Disposable {
         val truncated = bytes.size > maxBytes
         if (truncated) diff = String(bytes, 0, maxBytes)
         indicator?.text = "opencode: reviewing changes against $baseBranch"
-        val answer = opencode.askJson(root, selfReviewPrompt(baseBranch, diff, truncated), indicator)
+        val answer = askOpencode(root, selfReviewPrompt(baseBranch, diff, truncated), indicator)
         val findings = answer.takeIf { it.isJsonObject }?.asJsonObject?.get("findings")?.takeIf { it.isJsonArray }?.asJsonArray ?: com.google.gson.JsonArray()
         var n = 0
         val list = findings.mapNotNull { el ->
@@ -1035,12 +1077,12 @@ class CrService(val project: Project) : Disposable {
         val recent = Git.recentSubjects(root, st.commitRecentCommits)
         val format = ps.commitFormat()
         var prompt = commitPrompt(format, shown, stat, br, recent, truncated)
-        var result = checkCommitParts(opencode.askJson(root, prompt, indicator), format)
+        var result = checkCommitParts(askOpencode(root, prompt, indicator), format)
         if (result.problems.isNotEmpty()) {
             // One more try with the problems listed; after that the best answer is used.
             log("Commit message does not follow the format, asking again: " + result.problems.joinToString("; "))
             prompt += "\n\nYour previous answer had these problems, fix them:\n- " + result.problems.joinToString("\n- ")
-            val second = checkCommitParts(opencode.askJson(root, prompt, indicator), format)
+            val second = checkCommitParts(askOpencode(root, prompt, indicator), format)
             if (second.problems.size <= result.problems.size) result = second
             if (result.problems.isNotEmpty()) notify("The commit message does not fully follow the format: " + result.problems.joinToString("; "), NotificationType.WARNING)
         }
@@ -1138,7 +1180,7 @@ class CrService(val project: Project) : Disposable {
                 todo.add(j)
             }
         }
-        if (todo.isEmpty()) return
+        if (todo.isEmpty() || (!explicit && !opencodeUsable())) return
         background("opencode: analysing the failed pipeline") { indicator ->
             pipelineIndicator = indicator
             var ok = 0
@@ -1149,6 +1191,8 @@ class CrService(val project: Project) : Disposable {
                     synchronized(this) { ok++ }
                 } catch (e: ProcessCanceledException) {
                     throw e
+                } catch (e: OpencodeNotFoundException) {
+                    onOpencodeMissing(e, indicator)
                 } catch (e: Exception) {
                     synchronized(this) { failed++ }
                     log("Cannot analyse job ${j.name}: ${e.message}")
@@ -1184,7 +1228,7 @@ class CrService(val project: Project) : Disposable {
             log("Cannot list the changed files: ${e.message}")
             emptyList()
         }
-        val raw = opencode.askJson(s.root, pipelinePrompt(job.name, job.stage, job.failureReason, log.text, log.truncated, files, baseBranch), indicator)
+        val raw = askOpencode(s.root, pipelinePrompt(job.name, job.stage, job.failureReason, log.text, log.truncated, files, baseBranch), indicator)
         val answer = validateFixAnswer(raw)
         val cause = raw.asJsonObject.str("cause")?.trim()?.ifEmpty { null } ?: answer.explanation.ifEmpty { "No cause given." }
         val edits = answer.edits.map { e -> prepareEdit(text(document(s.root, e.file)), e) }

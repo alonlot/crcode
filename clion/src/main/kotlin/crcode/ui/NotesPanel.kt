@@ -64,6 +64,9 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
     /** Reply text typed by the user, per thread, so a refresh does not lose it. */
     private val typed = HashMap<String, String>()
     private var shown: Any? = null
+    /** Expanded or collapsed by the user, per node key, so a refresh keeps it. */
+    private val expansion = HashMap<String, Boolean>()
+    private var rebuilding = false
 
     init {
         tree.isRootVisible = false
@@ -71,6 +74,13 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
         tree.cellRenderer = Renderer()
         tree.addTreeSelectionListener { showDetails(selected()) }
         TreeUtil.installActions(tree)
+        tree.addTreeExpansionListener(object : javax.swing.event.TreeExpansionListener {
+            override fun treeExpanded(e: javax.swing.event.TreeExpansionEvent) = remember(e, true)
+            override fun treeCollapsed(e: javax.swing.event.TreeExpansionEvent) = remember(e, false)
+            private fun remember(e: javax.swing.event.TreeExpansionEvent, open: Boolean) {
+                if (!rebuilding) key((e.path.lastPathComponent as? DefaultMutableTreeNode)?.userObject)?.let { expansion[it] = open }
+            }
+        })
 
         val toolbar = ActionManager.getInstance().createActionToolbar("GitLabCrToolbar", ActionManager.getInstance().getAction("GitLabCr.Toolbar") as ActionGroup, true)
         toolbar.targetComponent = this
@@ -85,6 +95,13 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
         splitter.firstComponent = ScrollPaneFactory.createScrollPane(tree, true)
         splitter.secondComponent = details
         add(splitter, BorderLayout.CENTER)
+        // Side by side when the tool window is wide, tree above the details when it is narrow (docked on the right).
+        addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) {
+                val vertical = width < JBUI.scale(760)
+                if (splitter.orientation != vertical) splitter.orientation = vertical
+            }
+        })
 
         service.addListener(object : CrListener {
             override fun changed() = rebuild()
@@ -106,11 +123,7 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
 
     fun rebuild() {
         val selectedKey = key(selected())
-        val collapsed = mutableSetOf<String>()
-        TreeUtil.treeNodeTraverser(root).forEach { n ->
-            val node = n as DefaultMutableTreeNode
-            if (node !== root && !node.isLeaf && !tree.isExpanded(TreePath(node.path))) key(node.userObject)?.let { collapsed.add(it) }
-        }
+        rebuilding = true
         root.removeAllChildren()
         service.pipeline?.let { info ->
             val pn = DefaultMutableTreeNode(PipelineNode(info))
@@ -131,10 +144,21 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
         group("Review notes", AllIcons.General.Balloon, service.gitlabThreads)
         group("Self review", AllIcons.General.InspectionsEye, service.selfThreads)
         model.reload()
-        TreeUtil.treeNodeTraverser(root).forEach { n ->
-            val node = n as DefaultMutableTreeNode
-            if (node !== root && !node.isLeaf && key(node.userObject) !in collapsed) tree.expandPath(TreePath(node.path))
+        // JTree keeps the state of the children of a collapsed node: first expand what is open, then collapse
+        // what is closed (deepest first), so a stage keeps its state under a collapsed pipeline.
+        val nodes = TreeUtil.treeNodeTraverser(root).toList().map { it as DefaultMutableTreeNode }.filter { it !== root && !it.isLeaf }
+        fun isOpen(node: DefaultMutableTreeNode): Boolean {
+            val k = key(node.userObject) ?: return true
+            // Defaults: the pipeline is collapsed (the Pipeline tab shows it), stages that passed are collapsed.
+            return expansion[k] ?: when (val o = node.userObject) {
+                is PipelineNode -> false
+                is StageNode -> o.status != "success" && o.status != "skipped"
+                else -> true
+            }
         }
+        nodes.filter { isOpen(it) }.forEach { tree.expandPath(TreePath(it.path)) }
+        nodes.filter { !isOpen(it) }.sortedByDescending { it.level }.forEach { tree.collapsePath(TreePath(it.path)) }
+        rebuilding = false
         header.text = if (service.loading) "Loading…" else service.message
         val again = selectedKey?.let { k -> TreeUtil.treeNodeTraverser(root).find { key((it as DefaultMutableTreeNode).userObject) == k } as? DefaultMutableTreeNode }
         if (again != null) {
@@ -163,7 +187,7 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
             is StageNode -> text("<b>Stage ${Html.esc(o.name)}</b>: ${Html.esc(statusLabel(o.status))}<br>${o.jobs.size} job(s)")
             else -> text(
                 if (service.session == null) "No review notes loaded.<br><br>Click <b>Refresh</b> in the toolbar. Set the token with the key icon."
-                else Html.esc(service.message),
+                else "<span style='color:gray'>Select a note or a job to see it here.</span>",
             )
         }
         details.add(JBScrollPane(content).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
@@ -173,7 +197,7 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
 
     private fun text(html: String): JComponent {
         val pane = JEditorPane()
-        pane.editorKit = UIUtil.getHTMLEditorKit()
+        pane.editorKit = com.intellij.util.ui.HTMLEditorKitBuilder().build()
         pane.isEditable = false
         pane.isOpaque = false
         pane.text = "<html><body>$html</body></html>"
@@ -188,11 +212,16 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
         p.alignmentX = 0f
         if (title != null) p.add(JBLabel(title).apply { font = font.deriveFont(Font.BOLD); alignmentX = 0f; border = JBUI.Borders.emptyBottom(4) })
         parts.forEach { it.alignmentX = 0f; p.add(it) }
-        return p
+        return object : JPanel(BorderLayout()) {
+            // Keep the section at its own height, so the space goes below the last section.
+            override fun getMaximumSize() = java.awt.Dimension(Int.MAX_VALUE, preferredSize.height)
+        }.apply { add(p); alignmentX = 0f }
     }
 
     private fun buttons(vararg b: Pair<String, () -> Unit>?): JPanel {
-        val p = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        val p = object : JPanel(com.intellij.util.ui.WrapLayout(FlowLayout.LEFT, 4, 2)) {
+            override fun getMaximumSize() = java.awt.Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
         p.alignmentX = 0f
         for (pair in b.filterNotNull()) {
             val button = JButton(pair.first)
@@ -205,7 +234,6 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
             }
             p.add(button)
         }
-        p.maximumSize = java.awt.Dimension(Int.MAX_VALUE, p.preferredSize.height)
         return p
     }
 
@@ -345,13 +373,14 @@ class NotesPanel(private val project: Project, parent: Disposable) : JPanel(Bord
                     icon = CrIcons.status(st)
                     append(o.job.name)
                     append("  ${statusLabel(st)}" + (o.job.duration?.let { " · ${formatDuration(it)}" } ?: ""), SimpleTextAttributes.GRAYED_ATTRIBUTES)
-                    if (service.pipelineThreads.any { it.id == "pipeline-${o.job.id}" }) append("  💡", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    if (service.pipelineThreads.any { it.id == "pipeline-${o.job.id}" }) append("  · opencode finding", SimpleTextAttributes.GRAY_ITALIC_ATTRIBUTES)
                 }
                 is CrThread -> {
                     icon = CrIcons.thread(o)
                     append(o.title, if (o.resolved) SimpleTextAttributes.GRAYED_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
                     append("  ${o.location}${if (o.outdated) " (outdated)" else ""}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-                    if (o.draftReply != null) append("  ✎", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    val tags = listOfNotNull(if (o.suggestion != null) "fix ready" else null, if (o.draftReply != null) "reply draft" else null)
+                    if (tags.isNotEmpty()) append("  · ${tags.joinToString(" · ")}", SimpleTextAttributes.GRAY_ITALIC_ATTRIBUTES)
                 }
                 else -> {}
             }

@@ -10,7 +10,10 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class OpencodeException(message: String) : Exception(message)
+open class OpencodeException(message: String) : Exception(message)
+
+/** The opencode executable cannot be started. Retrying does not help until the path changes. */
+class OpencodeNotFoundException(message: String, val path: String) : OpencodeException(message)
 
 /** Runs `opencode run --format json` with the prompt on stdin. Blocks; call from a background thread. */
 class OpencodeRunner(private val log: (String) -> Unit) {
@@ -30,13 +33,10 @@ class OpencodeRunner(private val log: (String) -> Unit) {
         val process = try {
             ProcessBuilder(args).directory(File(cwd)).start()
         } catch (e: IOException) {
-            throw OpencodeException(
-                if (e.message?.contains("error=2") == true || e.message?.contains("No such file") == true) {
-                    "Cannot find '$exe'. Install opencode or set the opencode path in Settings | Tools | GitLab CR."
-                } else {
-                    "Cannot start opencode: ${e.message}"
-                },
-            )
+            if (e.message?.contains("error=2") == true || e.message?.contains("No such file") == true) {
+                throw OpencodeNotFoundException("Cannot find '$exe'. Install opencode or set the opencode path in Settings | Tools | GitLab CR + opencode.", exe)
+            }
+            throw OpencodeException("Cannot start opencode: ${e.message}")
         }
         val out = StringBuilder()
         val err = StringBuilder()

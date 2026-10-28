@@ -74,7 +74,7 @@ class PipelinePanel(private val project: Project, parent: Disposable) : JPanel(B
             val meta = listOfNotNull(
                 "Pipeline #${p.id}" + (service.session?.mr?.let { " for !${it.iid}" } ?: ""),
                 "${p.ref}  ${p.sha.take(8)}",
-                p.duration?.let { "⏱ ${formatDuration(it)}" },
+                p.duration?.let { "duration ${formatDuration(it)}" },
                 p.userName?.let { "by $it" },
                 p.source?.replace('_', ' '),
             )
@@ -103,7 +103,8 @@ class PipelinePanel(private val project: Project, parent: Disposable) : JPanel(B
     }
 
     private fun row(vararg c: JComponent?): JPanel {
-        val p = JPanel(FlowLayout(FlowLayout.LEFT, 8, 3))
+        // WrapLayout: the row continues on the next line when the tool window is narrow.
+        val p = JPanel(com.intellij.util.ui.WrapLayout(FlowLayout.LEFT, 8, 3))
         p.alignmentX = 0f
         c.filterNotNull().forEach { p.add(it) }
         return p
@@ -224,9 +225,13 @@ class PipelinePanel(private val project: Project, parent: Disposable) : JPanel(B
             alignmentX = 0f
             border = JBUI.Borders.empty(5, 8)
             val hasFinding = service.pipelineThreads.any { it.id == "pipeline-${job.id}" }
-            add(JBLabel(job.name + if (hasFinding) "  💡" else "", CrIcons.status(status), SwingConstants.LEFT), BorderLayout.CENTER)
-            add(JBLabel(formatDuration(job.duration)).apply { foreground = UIUtil.getContextHelpForeground() }, BorderLayout.EAST)
-            toolTipText = "<html><b>${Html.esc(job.name)}</b>: ${Html.esc(statusLabel(status))}" +
+            add(JBLabel(job.name, CrIcons.status(status), SwingConstants.LEFT), BorderLayout.CENTER)
+            add(JBLabel(formatDuration(job.duration)).apply {
+                foreground = UIUtil.getContextHelpForeground()
+                // A bulb on the job means opencode has a finding for it.
+                if (hasFinding) { icon = com.intellij.icons.AllIcons.Actions.IntentionBulb; horizontalTextPosition = SwingConstants.LEFT }
+            }, BorderLayout.EAST)
+            toolTipText = (if (hasFinding) "<html><i>opencode has a finding.</i><br>" else "<html>") + "<b>${Html.esc(job.name)}</b>: ${Html.esc(statusLabel(status))}" +
                 (job.queuedDuration?.let { "<br>queued ${formatDuration(it)}" } ?: "") +
                 (job.failureReason?.let { "<br>${Html.esc(it.replace('_', ' '))}" } ?: "") + "</html>"
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)

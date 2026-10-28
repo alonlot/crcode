@@ -114,7 +114,7 @@ class EditorMarkers(private val project: Project) : Disposable {
         override fun getTooltipText(): String =
             "<html>" + threads.joinToString("<hr>") { t ->
                 "<b>${Html.esc(t.label)}</b><br>" + t.notes.joinToString("<br>") { "<b>${Html.esc(it.author)}:</b> ${Html.esc(it.body.take(300))}" } +
-                    (if (t.suggestion != null) "<br><i>💡 opencode has a fix. Click to open.</i>" else "")
+                    (if (t.suggestion != null) "<br><i>opencode has a fix. Click to open it.</i>" else "")
             } + "</html>"
         override fun getClickAction(): AnAction = object : AnAction() {
             override fun actionPerformed(e: AnActionEvent) = service.openThread(threads.first())
@@ -131,8 +131,8 @@ class EditorMarkers(private val project: Project) : Disposable {
             val tags = listOfNotNull(
                 if (thread.outdated) "outdated" else null,
                 if (thread.notes.size > 1) "${thread.notes.size} notes" else null,
-                if (thread.suggestion != null) "💡 fix ready" else null,
-                if (thread.draftReply != null) "✎ reply draft" else null,
+                if (thread.suggestion != null) "fix ready" else null,
+                if (thread.draftReply != null) "reply draft" else null,
                 if (thread.resolved) "resolved" else null,
             )
             val who = when (thread.source) {
@@ -141,15 +141,17 @@ class EditorMarkers(private val project: Project) : Disposable {
                 ThreadSource.PIPELINE -> "CI failure · ${thread.subtitle ?: ""}"
             }
             val body = crcode.core.plainTitle(if (thread.source == ThreadSource.GITLAB) last?.body ?: "" else thread.notes.first().body.lines().drop(if (thread.source == ThreadSource.PIPELINE) 2 else 0).joinToString("\n"))
-            return "💬 $who: $body" + if (tags.isNotEmpty()) "   [${tags.joinToString(" · ")}]" else ""
+            return "$who: $body" + if (tags.isNotEmpty()) "   [${tags.joinToString(" · ")}]" else ""
         }
 
         override fun calcWidthInPixels(inlay: Inlay<*>): Int {
             val fm = editor.contentComponent.getFontMetrics(editor.colorsScheme.getFont(EditorFontType.PLAIN))
-            return fm.stringWidth(text()) + JBUI.scale(24) + indentX()
+            return fm.stringWidth(text()) + JBUI.scale(36) + icon().iconWidth + indentX()
         }
 
         override fun calcHeightInPixels(inlay: Inlay<*>): Int = editor.lineHeight + JBUI.scale(6)
+
+        private fun icon(): Icon = CrIcons.thread(thread)
 
         private fun indentX(): Int {
             val line = thread.line ?: return 0
@@ -175,9 +177,11 @@ class EditorMarkers(private val project: Project) : Disposable {
             g2.fillRoundRect(x, r.y + JBUI.scale(2), w, r.height - JBUI.scale(4), JBUI.scale(8), JBUI.scale(8))
             g2.color = color
             g2.fillRect(x, r.y + JBUI.scale(2), JBUI.scale(3), r.height - JBUI.scale(4))
+            val icon = icon()
+            icon.paintIcon(editor.contentComponent, g2, x + JBUI.scale(9), r.y + (r.height - icon.iconHeight) / 2)
             g2.font = editor.colorsScheme.getFont(EditorFontType.PLAIN)
             g2.color = if (thread.resolved) JBColor.GRAY else editor.colorsScheme.defaultForeground
-            g2.drawString(text(), x + JBUI.scale(10), r.y + (r.height + g2.fontMetrics.ascent - g2.fontMetrics.descent) / 2)
+            g2.drawString(text(), x + JBUI.scale(15) + icon.iconWidth, r.y + (r.height + g2.fontMetrics.ascent - g2.fontMetrics.descent) / 2)
             g2.dispose()
         }
     }

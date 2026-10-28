@@ -2,7 +2,7 @@
 
 The CLion version of the VS Code extension in the parent folder. It shows the code review notes and the pipeline of your self-hosted GitLab merge request inside CLion, and uses [opencode](https://opencode.ai) to suggest fixes and replies, explain failed CI jobs, run a self code review, and write commit messages in your format.
 
-The plugin uses only the IntelliJ Platform (no C++ API), so it also works in IntelliJ IDEA, PyCharm, GoLand, Rider and the other JetBrains IDEs, version 2025.2 or later.
+The plugin uses only the IntelliJ Platform (no C++ API), so it also works in IntelliJ IDEA, PyCharm, GoLand, Rider and the other JetBrains IDEs. The JetBrains plugin verifier reports it compatible with CLion 2025.2 and 2026.2, with no use of deprecated, internal or experimental API.
 
 ## How it looks
 
@@ -15,9 +15,23 @@ The plugin uses only the IntelliJ Platform (no C++ API), so it also works in Int
 | Commit tool window | The ⚡ **Write Commit Message (opencode)** button in the commit message toolbar. |
 | Tools menu | **GitLab CR** with all actions. |
 
-![Review notes](docs/clion-review-notes.png)
+The screenshots are from a real IDE with the plugin, against a mock GitLab server and a fake opencode (see *Tests*).
 
-![Pipeline graph](docs/clion-pipeline-graph.png)
+Notes in the editor and in the tool window, with the fix and the reply draft from opencode:
+
+![Review notes](docs/review-notes.png)
+
+The pipeline graph, with the actions of a failed job:
+
+![Pipeline graph](docs/pipeline-graph.png)
+
+**Preview** opens the IDE diff viewer. The ✓ button in its toolbar applies the fix:
+
+![Fix preview](docs/fix-preview.png)
+
+The ⚡ button in the commit tool window writes the commit message for the checked files:
+
+![Commit message](docs/commit-message.png)
 
 ## Features
 
@@ -39,7 +53,13 @@ cd clion
 
 In CLion: **Settings | Plugins | ⚙ | Install Plugin from Disk…** and select the zip. Restart CLion.
 
-The first build downloads CLion (about 1.5 GB) for the compile classpath. It needs JDK 21; Gradle 9 comes with the wrapper.
+The first build downloads CLion (about 1.5 GB) for the compile classpath. It needs JDK 21; Gradle 9 comes with the wrapper. Other tasks:
+
+| Task | What it does |
+| --- | --- |
+| `./gradlew runIde` | Starts CLion with the plugin (CLion asks for a license or a JetBrains account). |
+| `./gradlew runIdea` | Starts IntelliJ IDEA with the plugin. It needs no license, so it is good for a quick try. |
+| `./gradlew verifyPlugin` | Runs the JetBrains plugin verifier against CLion 2025.2 and 2026.2. |
 
 ## Setup
 
@@ -62,7 +82,7 @@ GitLab requests use the IDE proxy settings and the IDE certificate store. A self
 ```
 
 - `CoreTest`: the pure logic (opencode output parsing, line mapping, edits, templates, commit format checks, log cleanup, CI rules).
-- `PluginIntegrationTest`: runs the plugin in the headless CLion test platform with a mock GitLab server and a fake opencode: load, line mapping, automatic suggestions, preview and apply, reply, pipeline, CI analysis, job actions and logs, self review, commit message, and the UI panels. It writes the screenshots to `build/screenshots`.
+- `PluginIntegrationTest`: runs the plugin in the headless CLion test platform with a mock GitLab server (`MockGitLab.kt`) and a fake opencode (`FakeOpencode.java`): load, line mapping, automatic suggestions, preview and apply, reply, pipeline, CI analysis, job actions and logs, self review, commit message, and the UI panels. It paints the panels to `build/screenshots`. The test platform replaces the IDE icons with blank ones, so those images have no icons; the images in `docs/` are from a real IDE.
 
 ## Differences from the VS Code version
 
@@ -72,6 +92,9 @@ GitLab requests use the IDE proxy settings and the IDE certificate store. A self
 
 ## Limits
 
-- Not tested against a real GitLab server or a real opencode model. The tests use a mock and a fake.
+- Not tested against a real GitLab server or a real opencode model. The tests and the screenshots use a mock and a fake.
+- Not started in a licensed CLion: CLion asks for a license at the first start. The plugin ran in IntelliJ IDEA 2026.2 (same platform) and in the CLion test platform, and the verifier checked it against CLion.
+- On Linux without a system keychain (`libsecret`), the IDE keeps the token in memory only, so you must set it again after a restart, or use `GITLAB_TOKEN`.
+- After **Apply Fix** in the diff viewer, the viewer stays open and shows "No differences". Close it yourself.
 - The graph connects stages, not `needs` relations. Child and downstream pipelines are not shown.
 - Line numbers are moved with the files on disk; unsaved changes count only after a save and the next load.

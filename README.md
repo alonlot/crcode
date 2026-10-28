@@ -2,6 +2,8 @@
 
 Shows the code review (CR) notes and the pipeline of your self-hosted GitLab merge request inside VS Code, and uses [opencode](https://opencode.ai) to suggest fixes and replies, explain failed CI jobs, and write commit messages.
 
+A CLion (JetBrains IDEs) version with the same features is in [`clion/`](clion/README.md).
+
 ## How it looks
 
 Notes on code lines show as comment threads directly under the line in the editor. The **GitLab CR** view in the activity bar lists all notes, including general notes that are not on a line.

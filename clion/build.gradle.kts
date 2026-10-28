@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
@@ -11,6 +12,11 @@ version = providers.gradleProperty("pluginVersion").get()
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        // Call the default methods of platform interfaces instead of copying them into the plugin classes,
+        // so the plugin does not override deprecated or internal platform methods.
+        jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY)
+    }
 }
 
 repositories {
@@ -39,8 +45,26 @@ intellijPlatform {
             untilBuild = provider { null }
         }
     }
+    // `./gradlew verifyPlugin` checks the built plugin against the oldest supported CLion and the newest one.
+    pluginVerification {
+        ides {
+            create(IntelliJPlatformType.CLion, providers.gradleProperty("verifyOldestVersion").get())
+            create(IntelliJPlatformType.CLion, providers.gradleProperty("platformVersion").get())
+        }
+    }
     buildSearchableOptions = false
     instrumentCode = false
+}
+
+// `./gradlew runIdea` starts IntelliJ IDEA with the plugin. It needs no license, so it works for a quick try
+// and on CI; the plugin uses only platform APIs, so it behaves the same as in CLion (`./gradlew runIde`).
+intellijPlatformTesting {
+    runIde {
+        register("runIdea") {
+            type = IntelliJPlatformType.IntellijIdea
+            version = "2026.2.3"
+        }
+    }
 }
 
 tasks {
