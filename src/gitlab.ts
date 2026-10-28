@@ -50,6 +50,41 @@ export interface Discussion {
   notes: Note[];
 }
 
+export type PipelineStatus =
+  | 'created'
+  | 'waiting_for_resource'
+  | 'preparing'
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'canceled'
+  | 'skipped'
+  | 'manual'
+  | 'scheduled';
+
+export interface Pipeline {
+  id: number;
+  iid?: number;
+  status: PipelineStatus;
+  ref: string;
+  sha: string;
+  web_url: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Job {
+  id: number;
+  name: string;
+  stage: string;
+  status: PipelineStatus;
+  web_url: string;
+  allow_failure: boolean;
+  failure_reason?: string;
+  finished_at?: string;
+}
+
 export class GitLabError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);
@@ -176,6 +211,24 @@ export class GitLabClient {
       'PUT',
       `projects/${GitLabClient.project(project)}/merge_requests/${iid}/discussions/${discussionId}?resolved=${resolved}`,
     );
+  }
+
+  /** Pipelines of the merge request, newest first. */
+  mergeRequestPipelines(project: string, iid: number): Promise<Pipeline[]> {
+    return this.json('GET', `projects/${GitLabClient.project(project)}/merge_requests/${iid}/pipelines`);
+  }
+
+  pipelineJobs(project: string, pipelineId: number): Promise<Job[]> {
+    return this.paginate(`projects/${GitLabClient.project(project)}/pipelines/${pipelineId}/jobs?include_retried=false`);
+  }
+
+  /** Raw log of a job (plain text). */
+  async jobTrace(project: string, jobId: number): Promise<string> {
+    const res = await this.request('GET', `projects/${GitLabClient.project(project)}/jobs/${jobId}/trace`);
+    if (res.status < 200 || res.status >= 300) {
+      throw new GitLabError(`GitLab GET jobs/${jobId}/trace returned ${res.status}: ${res.body.slice(0, 300)}`, res.status);
+    }
+    return res.body;
   }
 
   createDiscussion(

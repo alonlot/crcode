@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { TextEdit } from './parse';
 
-export type ThreadSource = 'gitlab' | 'self';
+export type ThreadSource = 'gitlab' | 'self' | 'pipeline';
 
 export interface CrNote {
   id?: number;
@@ -43,6 +43,10 @@ export class CrThread {
   gitlabLine?: number;
   /** The line of the note was changed or deleted locally after the note was written. */
   outdated = false;
+  /** Short label for the thread header, for example the CI job name. */
+  subtitle?: string;
+  /** For a CI failure: the job web URL. */
+  jobUrl?: string;
 
   constructor(
     readonly id: string,

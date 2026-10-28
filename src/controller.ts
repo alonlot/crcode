@@ -2,18 +2,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CommentManager, CrComment } from './comments';
+import { CommitWriter } from './commit';
 import { applyGrouped, prepareEdit, previewTexts, resolveInRoot } from './edits';
 import * as git from './git';
-import { Discussion, GitLabClient, GitLabUser, MergeRequest } from './gitlab';
+import { Discussion, GitLabClient, GitLabUser, Job, MergeRequest } from './gitlab';
 import { CrThread, FixSuggestion } from './model';
 import { OpencodeRunner } from './opencode';
 import { mapLine, numberLines, parseHunks, validateFixAnswer } from './parse';
-import { fixPrompt, replyPrompt, selfReviewPrompt } from './prompts';
+import { PipelineInfo, PipelineStatusBar, failedJobs, isActive, statusIcon, statusText } from './pipeline';
+import { fixPrompt, pipelinePrompt, replyPrompt, selfReviewPrompt } from './prompts';
+import { cleanJobLog } from './text';
 import { ThreadTree } from './tree';
 
 const TOKEN_KEY = 'gitlabCr.token';
 export const PREVIEW_SCHEME = 'gitlabcr-preview';
 const CACHE_KEY = 'gitlabCr.suggestionCache';
+const PIPELINE_CACHE_KEY = 'gitlabCr.pipelineCache';
 const CACHE_DAYS = 14;
 const CONTEXT_LINES = 40;
 
@@ -23,6 +27,17 @@ interface CacheEntry {
   draftReply?: string;
   skipAutoFix?: boolean;
   skipAutoReply?: boolean;
+}
+
+/** What opencode found for a failed job, kept per workspace so a restart does not ask again. */
+interface JobCacheEntry {
+  at: number;
+  body: string;
+  file?: string;
+  line?: number;
+  suggestion?: FixSuggestion;
+  skipAutoFix: boolean;
+  dismissed: boolean;
 }
 
 interface Session {
@@ -54,6 +69,14 @@ export class Controller implements vscode.Disposable {
   private readonly previewChanged = new vscode.EventEmitter<vscode.Uri>();
   private gitlabThreads: CrThread[] = [];
   private selfThreads: CrThread[] = [];
+  private pipelineThreads: CrThread[] = [];
+  pipeline?: PipelineInfo;
+  private lastPipelineLoad = 0;
+  private pipelineRun?: vscode.CancellationTokenSource;
+  private remoteWatcher?: vscode.FileSystemWatcher;
+  private remoteTimer?: NodeJS.Timeout;
+  readonly statusBar = new PipelineStatusBar();
+  readonly commitWriter: CommitWriter;
   private root?: string;
   readonly comments: CommentManager;
   readonly tree = new ThreadTree();
@@ -65,6 +88,7 @@ export class Controller implements vscode.Disposable {
     private readonly output: vscode.OutputChannel,
   ) {
     this.opencode = new OpencodeRunner(output);
+    this.commitWriter = new CommitWriter(this.opencode, output);
     this.comments = new CommentManager(() => this.root);
     this.treeView = vscode.window.createTreeView('gitlabCr.threads', { treeDataProvider: this.tree as any, showCollapseAll: true });
     this.pollTimer = setInterval(() => this.poll(), 30_000);
@@ -78,15 +102,19 @@ export class Controller implements vscode.Disposable {
 
   dispose(): void {
     this.autoRun?.cancel();
+    this.pipelineRun?.cancel();
     clearInterval(this.pollTimer);
     this.headWatcher?.dispose();
+    this.remoteWatcher?.dispose();
     clearTimeout(this.branchTimer);
+    clearTimeout(this.remoteTimer);
+    this.statusBar.dispose();
     this.comments.dispose();
     this.treeView.dispose();
   }
 
   private get threads(): CrThread[] {
-    return [...this.gitlabThreads, ...this.selfThreads];
+    return [...this.gitlabThreads, ...this.selfThreads, ...this.pipelineThreads];
   }
 
   private update(changed?: CrThread): void {
@@ -115,6 +143,10 @@ export class Controller implements vscode.Disposable {
   }
 
   private saveCache(t: CrThread): void {
+    if (t.source === 'pipeline') {
+      this.saveJobCache(t, false);
+      return;
+    }
     if (t.source !== 'gitlab') {
       return;
     }
@@ -262,6 +294,7 @@ export class Controller implements vscode.Disposable {
         this.comments.show(added);
         this.tree.setThreads(this.threads);
         this.lastLoad = Date.now();
+        await this.loadPipeline(s);
         if (newNotes) {
           void vscode.window
             .showInformationMessage(`${newNotes} new review note(s) on !${s.mr!.iid}.`, 'Show')
@@ -328,10 +361,16 @@ export class Controller implements vscode.Disposable {
   /** Periodic check for new notes while the VS Code window has focus. */
   private poll(): void {
     const minutes = vscode.workspace.getConfiguration('gitlabCr.auto').get<number>('pollMinutes', 5);
-    if (!minutes || minutes <= 0 || !this.session || this.refreshing || !vscode.window.state.focused) {
+    if (!this.session || this.refreshing || !vscode.window.state.focused) {
       return;
     }
-    if (Date.now() - this.lastLoad < minutes * 60_000) {
+    // A running pipeline is checked more often than the notes, so the status bar follows it.
+    const seconds = vscode.workspace.getConfiguration('gitlabCr.pipeline').get<number>('pollSeconds', 60);
+    if (seconds > 0 && this.pipeline && isActive(this.pipeline.pipeline.status) && Date.now() - this.lastPipelineLoad >= seconds * 1000) {
+      this.lastPipelineLoad = Date.now();
+      void this.loadPipeline(this.session);
+    }
+    if (!minutes || minutes <= 0 || Date.now() - this.lastLoad < minutes * 60_000) {
       return;
     }
     this.lastLoad = Date.now(); // do not try again at once when the load fails
@@ -372,6 +411,21 @@ export class Controller implements vscode.Disposable {
     watcher.onDidChange(onHead);
     watcher.onDidCreate(onHead);
     this.headWatcher = watcher;
+
+    // A push updates the remote-tracking ref; a new pipeline usually starts then.
+    this.remoteWatcher?.dispose();
+    const remotes = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), '{refs/remotes/**,packed-refs}'));
+    const onRemote = () => {
+      clearTimeout(this.remoteTimer);
+      this.remoteTimer = setTimeout(() => {
+        if (this.session?.mr && !this.refreshing) {
+          void this.loadPipeline(this.session);
+        }
+      }, 3000);
+    };
+    remotes.onDidChange(onRemote);
+    remotes.onDidCreate(onRemote);
+    this.remoteWatcher = remotes;
   }
 
   private async onHeadChanged(root: string): Promise<void> {
@@ -649,19 +703,20 @@ export class Controller implements vscode.Disposable {
   /** "Fix CR for all page": makes and applies fixes for every open note of the merge request. */
   async fixAll(): Promise<void> {
     let pool = this.gitlabThreads;
-    if (this.selfThreads.length) {
-      const pick = await vscode.window.showQuickPick(
-        [
-          { label: 'GitLab review notes', value: 'gitlab' },
-          { label: 'Self review findings', value: 'self' },
-          { label: 'Both', value: 'both' },
-        ],
-        { placeHolder: 'Which notes do you want to fix?' },
-      );
+    if (this.selfThreads.length || this.pipelineThreads.length) {
+      const options = [{ label: 'GitLab review notes', value: this.gitlabThreads }];
+      if (this.selfThreads.length) {
+        options.push({ label: 'Self review findings', value: this.selfThreads });
+      }
+      if (this.pipelineThreads.length) {
+        options.push({ label: 'CI failures', value: this.pipelineThreads });
+      }
+      options.push({ label: 'All', value: this.threads });
+      const pick = await vscode.window.showQuickPick(options, { placeHolder: 'Which notes do you want to fix?' });
       if (!pick) {
         return;
       }
-      pool = pick.value === 'gitlab' ? this.gitlabThreads : pick.value === 'self' ? this.selfThreads : this.threads;
+      pool = pick.value;
     }
     // Skip notes whose fix was already applied or discarded: an applied insert must not go in twice.
     const targets = pool.filter((t) => t.file && t.line && !t.resolved && !t.skipAutoFix);
@@ -974,12 +1029,327 @@ export class Controller implements vscode.Disposable {
 
   async dismissFinding(arg: unknown): Promise<void> {
     const t = await this.threadFrom(arg);
-    if (!t || t.source !== 'self') {
+    if (!t || (t.source !== 'self' && t.source !== 'pipeline')) {
       return;
     }
     this.comments.remove(t);
     this.selfThreads = this.selfThreads.filter((x) => x !== t);
+    this.pipelineThreads = this.pipelineThreads.filter((x) => x !== t);
+    if (t.source === 'pipeline') {
+      this.saveJobCache(t, true);
+    }
     this.tree.setThreads(this.threads);
+  }
+
+  // ---------- commit message ----------
+
+  async writeCommitMessage(): Promise<string> {
+    const root = this.root ?? (await this.findRoot());
+    return this.commitWriter.write(root, this.session?.mr?.iid);
+  }
+
+  // ---------- pipeline ----------
+
+  private readJobCache(): Record<string, JobCacheEntry> {
+    return this.ctx.workspaceState.get<Record<string, JobCacheEntry>>(PIPELINE_CACHE_KEY) ?? {};
+  }
+
+  private saveJobCache(t: CrThread, dismissed: boolean): void {
+    const cache = this.readJobCache();
+    const minAge = Date.now() - CACHE_DAYS * 24 * 3600 * 1000;
+    for (const [k, v] of Object.entries(cache)) {
+      if (v.at < minAge) {
+        delete cache[k];
+      }
+    }
+    cache[t.id] = {
+      at: Date.now(),
+      body: t.notes[0]?.body ?? '',
+      file: t.file,
+      line: t.line,
+      suggestion: t.suggestion,
+      skipAutoFix: t.skipAutoFix,
+      dismissed,
+    };
+    void this.ctx.workspaceState.update(PIPELINE_CACHE_KEY, cache);
+  }
+
+  /** Loads the latest pipeline of the merge request. Errors go to the log only; the notes are still useful without it. */
+  private async loadPipeline(s: Session): Promise<void> {
+    this.lastPipelineLoad = Date.now();
+    const previous = this.pipeline;
+    try {
+      if (!s.mr) {
+        this.setPipeline(undefined);
+        return;
+      }
+      const pipelines = await s.client.mergeRequestPipelines(s.project, s.mr.iid);
+      const latest = pipelines[0];
+      if (!latest) {
+        this.setPipeline(undefined);
+        return;
+      }
+      const jobs = await s.client.pipelineJobs(s.project, latest.id);
+      this.setPipeline({ pipeline: latest, jobs }, s.mr.iid);
+    } catch (err) {
+      this.output.appendLine(`Cannot load the pipeline: ${(err as Error).message}`);
+      return;
+    }
+    const info = this.pipeline;
+    if (!info) {
+      return;
+    }
+    if (previous?.pipeline.id !== info.pipeline.id) {
+      // A new pipeline: the findings of the old one are not valid any more.
+      this.clearPipelineFindings();
+    }
+    const changed = previous?.pipeline.id !== info.pipeline.id || previous.pipeline.status !== info.pipeline.status;
+    if (!changed || isActive(info.pipeline.status)) {
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration('gitlabCr.pipeline');
+    const failed = failedJobs(info);
+    if (info.pipeline.status === 'failed' && failed.length) {
+      if (cfg.get<boolean>('notify', true) && previous) {
+        void vscode.window
+          .showErrorMessage(`Pipeline #${info.pipeline.id} failed: ${failed.map((j) => j.name).join(', ')}.`, 'Explain and Fix', 'Open')
+          .then((c) => {
+            if (c === 'Explain and Fix') {
+              void vscode.commands.executeCommand('gitlabCr.fixPipeline');
+            } else if (c === 'Open') {
+              void vscode.env.openExternal(vscode.Uri.parse(info.pipeline.web_url));
+            }
+          });
+      }
+      if (cfg.get<boolean>('autoExplain', true)) {
+        this.startAutoExplain(failed);
+      }
+    } else if (info.pipeline.status === 'success' && previous && cfg.get<boolean>('notify', true)) {
+      vscode.window.setStatusBarMessage(`$(check) Pipeline #${info.pipeline.id} passed.`, 8000);
+    }
+  }
+
+  private setPipeline(info: PipelineInfo | undefined, mrIid?: number): void {
+    this.pipeline = info;
+    this.statusBar.update(info, mrIid);
+    this.tree.setPipeline(info);
+    if (!info) {
+      this.clearPipelineFindings();
+    }
+  }
+
+  clearPipelineFindings(): void {
+    this.pipelineRun?.cancel();
+    if (this.pipelineThreads.length) {
+      this.comments.clear('pipeline');
+      this.pipelineThreads = [];
+      this.tree.setThreads(this.threads);
+    }
+  }
+
+  /** Reloads the pipeline on request (status bar, view title). */
+  async refreshPipeline(): Promise<void> {
+    if (!this.session) {
+      await this.refresh();
+      return;
+    }
+    await this.loadPipeline(this.session);
+  }
+
+  /** Quick pick with the jobs of the latest pipeline. */
+  async showPipeline(): Promise<void> {
+    if (!this.pipeline) {
+      await this.refreshPipeline();
+    }
+    const info = this.pipeline;
+    if (!info) {
+      vscode.window.showInformationMessage('No pipeline for the merge request of the current branch.');
+      return;
+    }
+    type Item = vscode.QuickPickItem & { job?: Job; action?: 'open' | 'refresh' };
+    const items: Item[] = [
+      { label: `$(link-external) Open pipeline #${info.pipeline.id} in browser`, description: statusText(info.pipeline.status), action: 'open' },
+      { label: '$(refresh) Refresh pipeline status', action: 'refresh' },
+      { label: 'Jobs', kind: vscode.QuickPickItemKind.Separator },
+      ...info.jobs.map((j) => ({
+        label: `$(${statusIcon(j.status)}) ${j.name}`,
+        description: `${j.stage} · ${statusText(j.status)}${j.allow_failure && j.status === 'failed' ? ' (allowed to fail)' : ''}`,
+        detail: j.status === 'failed' ? 'Enter: explain and fix with opencode' : 'Enter: open the job log in the browser',
+        job: j,
+      })),
+    ];
+    const pick = await vscode.window.showQuickPick(items, { placeHolder: `Pipeline #${info.pipeline.id}: ${statusText(info.pipeline.status)}` });
+    if (!pick) {
+      return;
+    }
+    if (pick.action === 'open') {
+      await vscode.env.openExternal(vscode.Uri.parse(info.pipeline.web_url));
+    } else if (pick.action === 'refresh') {
+      await this.refreshPipeline();
+    } else if (pick.job?.status === 'failed') {
+      await this.fixPipeline(pick.job);
+    } else if (pick.job) {
+      await vscode.env.openExternal(vscode.Uri.parse(pick.job.web_url));
+    }
+  }
+
+  async openJob(arg: unknown): Promise<void> {
+    const job = ThreadTree.jobOf(arg) ?? (arg as Job | undefined);
+    const url = job?.web_url ?? (await this.threadFrom(arg))?.jobUrl;
+    if (url) {
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+    }
+  }
+
+  /** "Explain and Fix" for a failed job: from the tree, the status bar list, a notification, or the command palette. */
+  async fixPipeline(arg?: unknown): Promise<void> {
+    let job = ThreadTree.jobOf(arg) ?? ((arg as Job)?.web_url ? (arg as Job) : undefined);
+    if (!job) {
+      if (!this.pipeline) {
+        await this.refreshPipeline();
+      }
+      const failed = this.pipeline ? this.pipeline.jobs.filter((j) => j.status === 'failed') : [];
+      if (!failed.length) {
+        vscode.window.showInformationMessage('The latest pipeline has no failed job.');
+        return;
+      }
+      if (failed.length === 1) {
+        job = failed[0];
+      } else {
+        const pick = await vscode.window.showQuickPick(
+          failed.map((j) => ({ label: j.name, description: j.stage, job: j })),
+          { placeHolder: 'Which failed job?' },
+        );
+        job = pick?.job;
+      }
+    }
+    if (!job) {
+      return;
+    }
+    const target = job;
+    const t = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `opencode: analysing job "${target.name}"`, cancellable: true },
+      (_p, token) => this.explainJob(target, token),
+    );
+    if (t.file) {
+      await this.openThread(t);
+    } else {
+      await vscode.commands.executeCommand('gitlabCr.threads.focus');
+    }
+    vscode.window.showInformationMessage(
+      `${target.name}: ${t.notes[0].body.split('\n').find((l) => l.trim() && !l.startsWith('**')) ?? 'see the GitLab CR view'}`,
+    );
+  }
+
+  /** Runs opencode for the failed jobs in the background, except for jobs explained before. */
+  private startAutoExplain(jobs: Job[]): void {
+    this.pipelineRun?.cancel();
+    const cache = this.readJobCache();
+    const max = vscode.workspace.getConfiguration('gitlabCr.pipeline').get<number>('maxJobs', 3);
+    const todo: Job[] = [];
+    for (const j of jobs) {
+      const saved = cache[`pipeline-${j.id}`];
+      if (saved && !saved.dismissed) {
+        this.addPipelineThread(j, saved.body, saved.file, saved.line, saved.suggestion, saved.skipAutoFix);
+      } else if (!saved && todo.length < max) {
+        todo.push(j);
+      }
+    }
+    if (!todo.length) {
+      return;
+    }
+    const cts = new vscode.CancellationTokenSource();
+    this.pipelineRun = cts;
+    void vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Window, title: 'opencode: analysing the failed pipeline' },
+      async () => {
+        let ok = 0;
+        let failed = 0;
+        const concurrency = vscode.workspace.getConfiguration('gitlabCr.fixAll').get<number>('concurrency') ?? 2;
+        await runPool(todo, concurrency, cts.token, async (j) => {
+          try {
+            await this.explainJob(j, cts.token);
+            ok++;
+          } catch (err) {
+            if (!(err instanceof vscode.CancellationError)) {
+              failed++;
+              this.output.appendLine(`Cannot analyse job ${j.name}: ${(err as Error).message}`);
+            }
+          }
+        });
+        if (cts.token.isCancellationRequested || !ok) {
+          return;
+        }
+        void vscode.window
+          .showInformationMessage(
+            `opencode explained ${ok} failed job(s)${failed ? `, ${failed} failed (see the "GitLab CR" output)` : ''}. See the GitLab CR view.`,
+            'Show',
+          )
+          .then((c) => c && vscode.commands.executeCommand('gitlabCr.threads.focus'));
+      },
+    );
+  }
+
+  /** Gets the job log, asks opencode for the cause and a fix, and shows the result as a thread. */
+  private async explainJob(job: Job, token?: vscode.CancellationToken): Promise<CrThread> {
+    const s = this.session;
+    if (!s?.mr) {
+      throw new Error('No merge request loaded.');
+    }
+    const cfg = vscode.workspace.getConfiguration('gitlabCr');
+    const remote = cfg.get<string>('remoteName') || 'origin';
+    const maxBytes = Math.max(4, cfg.get<number>('pipeline.maxLogKb') ?? 48) * 1024;
+    const raw = await s.client.jobTrace(s.project, job.id);
+    const log = cleanJobLog(raw, maxBytes);
+    if (!log.text.trim()) {
+      throw new Error(`The log of job "${job.name}" is empty.`);
+    }
+    const baseBranch = cfg.get<string>('selfReview.baseBranch') || s.mr.target_branch || 'main';
+    let files: string[] = [];
+    try {
+      files = await git.changedFiles(s.root, await git.mergeBase(s.root, baseBranch, remote));
+    } catch (err) {
+      this.output.appendLine(`Cannot list the changed files: ${(err as Error).message}`);
+    }
+    const prompt = pipelinePrompt({ name: job.name, stage: job.stage, failureReason: job.failure_reason }, log.text, log.truncated, files, baseBranch);
+    const raw2 = await this.opencode.askJson<any>(s.root, prompt, token);
+    const answer = validateFixAnswer(raw2);
+    const cause = typeof raw2?.cause === 'string' && raw2.cause.trim() ? raw2.cause.trim() : answer.explanation || 'No cause given.';
+    const edits = [];
+    for (const e of answer.edits) {
+      const target = await vscode.workspace.openTextDocument(vscode.Uri.file(resolveInRoot(s.root, e.file)));
+      edits.push(prepareEdit(target, e));
+    }
+    const first = edits[0];
+    const body = `**Pipeline #${this.pipeline?.pipeline.id ?? '?'}: job "${job.name}" (${job.stage}) failed.**\n\n${cause}`;
+    return this.addPipelineThread(job, body, first?.file, first?.startLine, { explanation: answer.explanation, edits }, false);
+  }
+
+  private addPipelineThread(
+    job: Job,
+    body: string,
+    file: string | undefined,
+    line: number | undefined,
+    suggestion: FixSuggestion | undefined,
+    skipAutoFix: boolean,
+  ): CrThread {
+    const id = `pipeline-${job.id}`;
+    const old = this.pipelineThreads.find((t) => t.id === id);
+    if (old) {
+      this.comments.remove(old);
+      this.pipelineThreads = this.pipelineThreads.filter((t) => t !== old);
+    }
+    const exists = !!file && fs.existsSync(path.join(this.session?.root ?? '', file));
+    const t = new CrThread(id, 'pipeline', [{ author: 'opencode CI analysis', body }], exists ? file : undefined, exists ? line : undefined, false, false);
+    t.subtitle = job.name;
+    t.jobUrl = job.web_url;
+    t.suggestion = suggestion?.edits.length ? suggestion : undefined;
+    t.skipAutoFix = skipAutoFix;
+    this.pipelineThreads.push(t);
+    this.comments.show([t]);
+    this.tree.setThreads(this.threads);
+    this.saveJobCache(t, false);
+    return t;
   }
 
   /** Posts a self review finding to the merge request as a new discussion. */

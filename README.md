@@ -1,6 +1,6 @@
 # GitLab CR + opencode (VS Code extension)
 
-Shows the code review (CR) notes of your self-hosted GitLab merge request inside VS Code, and uses [opencode](https://opencode.ai) to suggest fixes and replies.
+Shows the code review (CR) notes and the pipeline of your self-hosted GitLab merge request inside VS Code, and uses [opencode](https://opencode.ai) to suggest fixes and replies, explain failed CI jobs, and write commit messages.
 
 ## How it looks
 
@@ -25,6 +25,9 @@ Self review findings show the same way, with the label "Self review" and the sev
 | **Fix All CR Notes** 🪄 | GitLab CR view title | Makes fixes for all open notes of the merge request (several in parallel) and uses the fixes that are already ready. Then it applies them in one edit. It skips notes whose fix you already applied or discarded. Fixes that overlap are not applied; the log shows them. |
 | **Self Code Review** ☑ | GitLab CR view title | Sends your diff (merge base of the target branch to the working tree, including uncommitted changes) to opencode for a review. Findings show as threads. On each finding you can **Suggest Fix**, **Apply Fix**, **Post to Merge Request** or **Dismiss**. |
 | **Resolve / Unresolve** | Thread title, view item context menu | Resolves the GitLab discussion. |
+| **Pipeline status** | Status bar (`CI: running`, `CI: failed (1)`), top of the GitLab CR view | Shows the latest pipeline of the merge request and its jobs. Click the status bar item for the job list. See *Pipeline* below. |
+| **Explain and Fix Failed Job (opencode)** | Failed job in the view, status bar list, failure message | Sends the end of the job log to opencode. The cause and a fix show as a thread on the code line, with **Preview** and **Apply Fix**. |
+| **Write Commit Message (opencode)** ✨ | Source Control title, command palette | Writes the commit message for the staged changes in the format you set, and puts it in the commit box. See *Commit messages* below. |
 
 ## Automatic mode
 
@@ -62,6 +65,61 @@ If the commit is not in your local repository, the extension runs `git fetch <re
 **Preview Fix** opens the diff editor. Click ✓ in its title to apply the fix.
 
 ![Fix preview in the diff editor](docs/fix-preview.png)
+
+## Pipeline
+
+The extension loads the latest pipeline of the merge request with the notes. The status bar shows it, and the GitLab CR view lists the jobs. While the pipeline runs, the status is checked every 60 seconds (`gitlabCr.pipeline.pollSeconds`), and also a few seconds after a push.
+
+![Failed pipeline with the cause and a fix](docs/pipeline.png)
+
+When the pipeline fails:
+
+1. A message tells you which jobs failed (`gitlabCr.pipeline.notify`).
+2. opencode reads the end of the log of each failed job (not the jobs that are allowed to fail), finds the first real error, and proposes a fix (`gitlabCr.pipeline.autoExplain`, at most `gitlabCr.pipeline.maxJobs` jobs). The result shows as a **CI failure** thread on the code line, with the same **Preview**, **Apply Fix** and **Dismiss** buttons as a review note. When the failure is not in the code (a runner problem, a missing secret), the thread says so and has no fix.
+3. The result is kept per job, so a restart does not analyse the same job again. A new pipeline removes the findings of the old one.
+
+Only the last `gitlabCr.pipeline.maxLogKb` KB of a log go to opencode. Colors, section markers and progress-bar rewrites are removed first.
+
+## Commit messages
+
+**Write Commit Message (opencode)** (the ✨ icon in the Source Control title) sends the staged diff to opencode and puts the message in the commit box. When nothing is staged, it describes all changes of tracked files (`gitlabCr.commit.source`).
+
+![Commit message in the Source Control box](docs/commit-message.png)
+
+opencode returns the parts (`type`, `scope`, `subject`, `body`, `breaking`). The extension checks them against your rules and asks one more time when they do not match (for example a type that is not in the list, or a subject that is too long). Then it builds the message from your template:
+
+```jsonc
+{
+  // default: conventional commits
+  "gitlabCr.commit.template": "{?type:{type}{?scope:({scope})}{?breaking:!}: }{subject}\n\n{?body:{body}\n\n}{?breaking:BREAKING CHANGE: {breaking}\n\n}{?footer:{footer}}",
+  "gitlabCr.commit.types": ["feat: a new feature", "fix: a bug fix", "docs: documentation only", "..."],
+  "gitlabCr.commit.scopes": [],                       // empty: opencode chooses
+  "gitlabCr.commit.subjectMaxLength": 72,
+  "gitlabCr.commit.subjectCase": "lower",             // lower | sentence | any
+  "gitlabCr.commit.subjectPeriod": false,
+  "gitlabCr.commit.body": "when-useful",              // never | when-useful | always
+  "gitlabCr.commit.bodyStyle": "paragraphs",          // paragraphs | bullets
+  "gitlabCr.commit.bodyWrap": 72,
+  "gitlabCr.commit.footer": "{?issue:Refs: #{issue}}", // filled by the extension, not by opencode
+  "gitlabCr.commit.issuePattern": "(?:^|[/_-])([A-Z]+-\\d+|\\d+)(?=[/_-]|$)", // finds {issue} in the branch name
+  "gitlabCr.commit.language": "English",
+  "gitlabCr.commit.rules": "",                        // free text, for example "Name the ticket in the subject"
+  "gitlabCr.commit.examples": []                      // example messages in your style
+}
+```
+
+Template syntax: `{name}` is replaced by the field. `{?name:...}` keeps the text only when the field is not empty, and can contain other placeholders. `{{` gives a literal brace. Fields: `type`, `scope`, `subject`, `body`, `breaking`, `footer`, `branch`, `issue`, `mr` (the merge request number of the branch). Blank lines at the end and double blank lines are removed.
+
+Examples of other formats:
+
+| Format | Settings |
+| --- | --- |
+| Plain subject and body, no type | `"types": []`, `"template": "{subject}\n\n{body}"` |
+| Jira key first | `"types": []`, `"subjectCase": "sentence"`, `"template": "{?issue:{issue} }{subject}\n\n{?body:{body}}"`, `"issuePattern": "([A-Z]+-\\d+)"` |
+| Gitmoji style | `"types": ["✨: feature", "🐛: bug fix", "📝: docs"]`, `"template": "{type} {subject}\n\n{body}"` |
+| Team trailers | `"footer": "Signed-off-by: Your Name <you@example.com>{?mr:\nMerge-Request: !{mr}}"` |
+
+Each message costs one opencode request, two when the first answer does not follow the format. The last `gitlabCr.commit.recentCommits` commit subjects go with the request as a style example.
 
 ## Requirements
 
@@ -103,10 +161,19 @@ The extension reads the GitLab URL and project path from the remote. Set them yo
 | `gitlabCr.fixAll.confirm` | `true` | Ask before **Fix All** applies the fixes. |
 | `gitlabCr.selfReview.baseBranch` | (MR target, or `main`) | Branch for the self review diff. |
 | `gitlabCr.selfReview.maxDiffKb` | `200` | Larger diffs are truncated. |
+| `gitlabCr.pipeline.pollSeconds` | `60` | Check a running pipeline every N seconds (window in focus). `0` turns it off. |
+| `gitlabCr.pipeline.notify` | `true` | Message when the pipeline fails or passes. |
+| `gitlabCr.pipeline.autoExplain` | `true` | Analyse failed jobs with opencode automatically. |
+| `gitlabCr.pipeline.maxJobs` | `3` | Failed jobs analysed automatically per pipeline. |
+| `gitlabCr.pipeline.maxLogKb` | `48` | End of the job log sent to opencode. |
+| `gitlabCr.commit.*` | see *Commit messages* | Format of the commit message, source of the diff (`auto`, `staged`, `all`), `maxDiffKb`, `recentCommits`. |
 
 The extension runs `opencode run --format json --agent <agent> [--model <model>]` in the repository root and sends the prompt through stdin. The **GitLab CR** output channel shows each command and answer.
 
 ## Limits
+
+- The pipeline shown is the latest pipeline that GitLab lists for the merge request. Child pipelines and downstream pipelines are not listed.
+- The job log analysis sees only the end of the log. For a long log where the error is early, set `gitlabCr.pipeline.maxLogKb` higher.
 
 - Line numbers are moved with the file on disk. Changes that are not saved are not included until the next load.
 - Notes on removed lines show on the same line number of the new file.

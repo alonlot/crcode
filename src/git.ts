@@ -109,3 +109,36 @@ export async function fetchBranch(root: string, remote: string, branch: string):
 export function diffFileSince(root: string, sha: string, file: string): Promise<string> {
   return git(root, ['diff', '--no-color', '--unified=0', sha, '--', file]);
 }
+
+/** Staged changes, or when nothing is staged, all changes of tracked files. */
+export async function changesForCommit(root: string, source: 'auto' | 'staged' | 'all'): Promise<{ diff: string; staged: boolean }> {
+  if (source !== 'all') {
+    const staged = await git(root, ['diff', '--no-color', '--cached', '--unified=3', '--']);
+    if (staged.trim() || source === 'staged') {
+      return { diff: staged, staged: true };
+    }
+  }
+  return { diff: await git(root, ['diff', '--no-color', '--unified=3', 'HEAD', '--']), staged: false };
+}
+
+export function diffStat(root: string, staged: boolean): Promise<string> {
+  return git(root, staged ? ['diff', '--cached', '--stat=100', '--'] : ['diff', '--stat=100', 'HEAD', '--']);
+}
+
+export async function recentSubjects(root: string, count: number): Promise<string[]> {
+  if (count <= 0) {
+    return [];
+  }
+  try {
+    const out = await git(root, ['log', `-${count}`, '--format=%s']);
+    return out.split('\n').filter((l) => l.trim());
+  } catch {
+    return []; // for example a repository without commits
+  }
+}
+
+/** Files changed between a commit and the working tree. */
+export async function changedFiles(root: string, base: string): Promise<string[]> {
+  const out = await git(root, ['diff', '--name-only', base, '--']);
+  return out.split('\n').filter((l) => l.trim());
+}

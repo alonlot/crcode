@@ -95,7 +95,9 @@ export class CommentManager implements vscode.Disposable {
       vs.label =
         t.source === 'self'
           ? `Self review${t.severity ? ' · ' + t.severity : ''}`
-          : t.outdated
+          : t.source === 'pipeline'
+            ? `CI failure${t.subtitle ? ' · ' + t.subtitle : ''}`
+            : t.outdated
             ? `GitLab CR · outdated (the code changed, was line ${t.gitlabLine})`
             : 'GitLab CR';
       vs.collapsibleState = t.resolved

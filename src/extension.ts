@@ -10,7 +10,7 @@ export function activate(ctx: vscode.ExtensionContext): { controller: Controller
     ctx.subscriptions.push(
       vscode.commands.registerCommand(id, async (...args: any[]) => {
         try {
-          await fn(...args);
+          return await fn(...args);
         } catch (err) {
           if (err instanceof vscode.CancellationError) {
             return;
@@ -43,6 +43,12 @@ export function activate(ctx: vscode.ExtensionContext): { controller: Controller
   register('gitlabCr.clearSelfReview', () => controller.clearSelfReview());
   register('gitlabCr.postFinding', (arg) => controller.postFinding(arg));
   register('gitlabCr.dismissFinding', (arg) => controller.dismissFinding(arg));
+  register('gitlabCr.writeCommitMessage', () => controller.writeCommitMessage());
+  register('gitlabCr.showPipeline', () => controller.showPipeline());
+  register('gitlabCr.refreshPipeline', () => controller.refreshPipeline());
+  register('gitlabCr.fixPipeline', (arg) => controller.fixPipeline(arg));
+  register('gitlabCr.openJob', (arg) => controller.openJob(arg));
+  register('gitlabCr.clearPipelineFindings', () => controller.clearPipelineFindings());
 
   // Load the notes on startup when a token is already saved. Errors only go to the log here.
   ctx.secrets.get('gitlabCr.token').then((token) => {

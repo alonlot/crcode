@@ -1,19 +1,35 @@
 import * as vscode from 'vscode';
+import { Job } from './gitlab';
 import { CrThread } from './model';
+import { PipelineInfo, failedJobs, statusIcon, statusText } from './pipeline';
 
 class NoteNode {
   constructor(readonly thread: CrThread, readonly label: string, readonly detail: string, readonly icon: string) {}
 }
 
-type Node = CrThread | NoteNode;
+export class PipelineNode {
+  constructor(readonly info: PipelineInfo) {}
+}
+
+export class JobNode {
+  constructor(readonly job: Job) {}
+}
+
+type Node = CrThread | NoteNode | PipelineNode | JobNode;
 
 export class ThreadTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private threads: CrThread[] = [];
+  private pipeline?: PipelineInfo;
 
   setThreads(threads: CrThread[]): void {
     this.threads = threads;
+    this.changed.fire(undefined);
+  }
+
+  setPipeline(info: PipelineInfo | undefined): void {
+    this.pipeline = info;
     this.changed.fire(undefined);
   }
 
@@ -23,17 +39,19 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
 
   getChildren(element?: Node): Node[] {
     if (!element) {
-      // GitLab notes first, then self review findings; each group sorted by file and line.
-      return [...this.threads].sort((a, b) =>
-        a.source !== b.source
-          ? a.source === 'gitlab'
-            ? -1
-            : 1
-          : (a.file ?? '').localeCompare(b.file ?? '') || (a.line ?? 0) - (b.line ?? 0),
+      // Pipeline first, then CI failures, GitLab notes and self review findings; each group sorted by file and line.
+      const order: Record<string, number> = { pipeline: 0, gitlab: 1, self: 2 };
+      const threads = [...this.threads].sort(
+        (a, b) =>
+          order[a.source] - order[b.source] || (a.file ?? '').localeCompare(b.file ?? '') || (a.line ?? 0) - (b.line ?? 0),
       );
+      return this.pipeline ? [new PipelineNode(this.pipeline), ...threads] : threads;
     }
-    if (element instanceof NoteNode) {
+    if (element instanceof NoteNode || element instanceof JobNode) {
       return [];
+    }
+    if (element instanceof PipelineNode) {
+      return element.info.jobs.map((j) => new JobNode(j));
     }
     const nodes: Node[] = element.notes.map(
       (n) => new NoteNode(element, n.author, n.body.replace(/\s+/g, ' ').slice(0, 200), 'comment'),
@@ -50,6 +68,26 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
   }
 
   getTreeItem(element: Node): vscode.TreeItem {
+    if (element instanceof PipelineNode) {
+      const { pipeline } = element.info;
+      const failed = failedJobs(element.info);
+      const item = new vscode.TreeItem(`Pipeline #${pipeline.id}: ${statusText(pipeline.status)}`, vscode.TreeItemCollapsibleState.Expanded);
+      item.description = failed.length ? `${failed.length} job(s) failed` : `${element.info.jobs.length} job(s)`;
+      item.iconPath = new vscode.ThemeIcon(statusIcon(pipeline.status));
+      item.contextValue = 'pipeline';
+      item.tooltip = pipeline.web_url;
+      return item;
+    }
+    if (element instanceof JobNode) {
+      const j = element.job;
+      const item = new vscode.TreeItem(j.name, vscode.TreeItemCollapsibleState.None);
+      item.description = `${j.stage} · ${statusText(j.status)}${j.allow_failure && j.status === 'failed' ? ' (allowed)' : ''}`;
+      item.iconPath = new vscode.ThemeIcon(statusIcon(j.status));
+      item.contextValue = `job job-${j.status}`;
+      item.tooltip = j.failure_reason ? `${j.web_url}\n${j.failure_reason}` : j.web_url;
+      item.command = { command: 'gitlabCr.openJob', title: 'Open Job Log in Browser', arguments: [element] };
+      return item;
+    }
     if (element instanceof NoteNode) {
       const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
       item.description = element.detail;
@@ -64,7 +102,7 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
     item.tooltip = new vscode.MarkdownString(`**${t.location}**\n\n${t.notes.map((n) => `**${n.author}:** ${n.body}`).join('\n\n')}`);
     item.contextValue = t.contextValue;
     item.iconPath = new vscode.ThemeIcon(
-      t.source === 'self' ? 'checklist' : t.resolved ? 'pass-filled' : t.suggestion ? 'lightbulb' : 'comment-discussion',
+      t.source === 'self' ? 'checklist' : t.source === 'pipeline' ? 'beaker' : t.resolved ? 'pass-filled' : t.suggestion ? 'lightbulb' : 'comment-discussion',
     );
     item.command = { command: 'gitlabCr.openThread', title: 'Open', arguments: [t] };
     return item;
@@ -79,5 +117,9 @@ export class ThreadTree implements vscode.TreeDataProvider<Node> {
       return arg.thread;
     }
     return undefined;
+  }
+
+  static jobOf(arg: unknown): Job | undefined {
+    return arg instanceof JobNode ? arg.job : undefined;
   }
 }

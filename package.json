@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "crcode",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alonlot/crcode.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -117,6 +121,176 @@
           "default": 200,
           "minimum": 10,
           "description": "Maximum diff size (in KB) sent to opencode for the self code review. A larger diff is truncated."
+        },
+        "gitlabCr.commit.template": {
+          "type": "string",
+          "default": "{?type:{type}{?scope:({scope})}{?breaking:!}: }{subject}\n\n{?body:{body}\n\n}{?breaking:BREAKING CHANGE: {breaking}\n\n}{?footer:{footer}}",
+          "editPresentation": "multilineText",
+          "markdownDescription": "Layout of the commit message. Placeholders: `{type}`, `{scope}`, `{subject}`, `{body}`, `{breaking}`, `{footer}`, `{branch}`, `{issue}`, `{mr}`. A block `{?name:...}` is kept only when that field is not empty, for example `{?scope:({scope})}`. Use `{{` for a literal brace. Extra blank lines are removed."
+        },
+        "gitlabCr.commit.types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "feat: a new feature",
+            "fix: a bug fix",
+            "docs: documentation only",
+            "style: formatting, no code change",
+            "refactor: code change that is not a fix or a feature",
+            "perf: performance",
+            "test: tests only",
+            "build: build system or dependencies",
+            "ci: CI configuration",
+            "chore: other changes that do not touch src or tests",
+            "revert: reverts a commit"
+          ],
+          "markdownDescription": "Allowed values of `{type}`, as `name: description` (the description helps opencode choose). An empty list means the message has no type."
+        },
+        "gitlabCr.commit.scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Allowed values of `{scope}`. When empty, opencode chooses a short scope itself (or none)."
+        },
+        "gitlabCr.commit.subjectMaxLength": {
+          "type": "number",
+          "default": 72,
+          "minimum": 20,
+          "description": "Maximum length of the subject line."
+        },
+        "gitlabCr.commit.subjectCase": {
+          "type": "string",
+          "enum": [
+            "lower",
+            "sentence",
+            "any"
+          ],
+          "default": "lower",
+          "enumDescriptions": [
+            "first letter in lower case (conventional commits)",
+            "first letter in upper case",
+            "as written by opencode"
+          ],
+          "description": "Case of the first letter of the subject."
+        },
+        "gitlabCr.commit.subjectPeriod": {
+          "type": "boolean",
+          "default": false,
+          "description": "End the subject with a period."
+        },
+        "gitlabCr.commit.body": {
+          "type": "string",
+          "enum": [
+            "never",
+            "when-useful",
+            "always"
+          ],
+          "default": "when-useful",
+          "description": "When the message gets a body that explains what changed and why."
+        },
+        "gitlabCr.commit.bodyStyle": {
+          "type": "string",
+          "enum": [
+            "paragraphs",
+            "bullets"
+          ],
+          "default": "paragraphs",
+          "description": "Form of the body."
+        },
+        "gitlabCr.commit.bodyWrap": {
+          "type": "number",
+          "default": 72,
+          "minimum": 0,
+          "description": "Wrap the body at this column. 0 does not wrap."
+        },
+        "gitlabCr.commit.footer": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "markdownDescription": "Template of `{footer}`, with the same placeholders and `{?name:...}` blocks, for example `{?issue:Refs: #{issue}}` or `{?mr:See merge request !{mr}}`. The extension fills it; opencode does not write it."
+        },
+        "gitlabCr.commit.issuePattern": {
+          "type": "string",
+          "default": "(?:^|[/_-])([A-Z]+-\\d+|\\d+)(?=[/_-]|$)",
+          "markdownDescription": "Regular expression that finds `{issue}` in the branch name (the first group, or the whole match). The default finds `123` in `123-fix-login` and `ABC-42` in `feature/ABC-42-login`."
+        },
+        "gitlabCr.commit.language": {
+          "type": "string",
+          "default": "English",
+          "description": "Language of the message."
+        },
+        "gitlabCr.commit.rules": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "markdownDescription": "Extra rules for opencode in plain text, for example \"Name the ticket in the subject\" or \"Do not mention file names\"."
+        },
+        "gitlabCr.commit.examples": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Example messages that show the style you want. They are sent to opencode with each request."
+        },
+        "gitlabCr.commit.source": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "staged",
+            "all"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "the staged changes; when nothing is staged, all changes of tracked files",
+            "only the staged changes",
+            "all changes of tracked files"
+          ],
+          "description": "Which changes the message describes."
+        },
+        "gitlabCr.commit.maxDiffKb": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "description": "Maximum diff size (in KB) sent to opencode. A larger diff is truncated."
+        },
+        "gitlabCr.commit.recentCommits": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Number of recent commit subjects sent to opencode as a style example. 0 sends none."
+        },
+        "gitlabCr.pipeline.pollSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "description": "While the pipeline runs, check its status every N seconds (window in focus). 0 turns this off; the status then updates with the notes."
+        },
+        "gitlabCr.pipeline.notify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a message when the pipeline of the merge request fails or passes."
+        },
+        "gitlabCr.pipeline.autoExplain": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When the pipeline fails, ask opencode in the background for the cause and a fix of each failed job. One opencode request per job; the result is kept, so a job is not analysed twice."
+        },
+        "gitlabCr.pipeline.maxJobs": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Maximum number of failed jobs analysed automatically per pipeline."
+        },
+        "gitlabCr.pipeline.maxLogKb": {
+          "type": "number",
+          "default": 48,
+          "minimum": 4,
+          "description": "Only the last N KB of a job log are sent to opencode."
         }
       }
     },
@@ -144,83 +318,422 @@
       }
     ],
     "commands": [
-      { "command": "gitlabCr.refresh", "title": "Refresh CR Notes", "category": "GitLab CR", "icon": "$(refresh)" },
-      { "command": "gitlabCr.setToken", "title": "Set GitLab Access Token", "category": "GitLab CR", "icon": "$(key)" },
-      { "command": "gitlabCr.openInBrowser", "title": "Open Merge Request in Browser", "category": "GitLab CR", "icon": "$(link-external)" },
-      { "command": "gitlabCr.fixAll", "title": "Fix All CR Notes", "category": "GitLab CR", "icon": "$(wand)" },
-      { "command": "gitlabCr.selfReview", "title": "Self Code Review", "category": "GitLab CR", "icon": "$(checklist)" },
-      { "command": "gitlabCr.clearSelfReview", "title": "Clear Self Review Findings", "category": "GitLab CR", "icon": "$(clear-all)" },
-      { "command": "gitlabCr.suggestFix", "title": "Suggest Fix (opencode)", "category": "GitLab CR", "icon": "$(lightbulb)" },
-      { "command": "gitlabCr.applyFix", "title": "Apply Fix", "category": "GitLab CR", "icon": "$(check)" },
-      { "command": "gitlabCr.previewFix", "title": "Preview Fix in Diff Editor", "category": "GitLab CR", "icon": "$(diff)" },
-      { "command": "gitlabCr.applyFromPreview", "title": "Apply Fix", "category": "GitLab CR", "icon": "$(check)" },
-      { "command": "gitlabCr.reply", "title": "Reply", "category": "GitLab CR", "icon": "$(comment)" },
-      { "command": "gitlabCr.suggestReply", "title": "Suggest Reply (opencode)", "category": "GitLab CR", "icon": "$(sparkle)" },
-      { "command": "gitlabCr.sendDraft", "title": "Send Reply", "category": "GitLab CR", "icon": "$(send)" },
-      { "command": "gitlabCr.editDraft", "title": "Edit Reply", "category": "GitLab CR", "icon": "$(edit)" },
-      { "command": "gitlabCr.discardDraft", "title": "Discard", "category": "GitLab CR", "icon": "$(trash)" },
-      { "command": "gitlabCr.saveDraft", "title": "Save", "category": "GitLab CR" },
-      { "command": "gitlabCr.cancelDraftEdit", "title": "Cancel", "category": "GitLab CR" },
-      { "command": "gitlabCr.toggleResolved", "title": "Resolve / Unresolve", "category": "GitLab CR", "icon": "$(pass)" },
-      { "command": "gitlabCr.postFinding", "title": "Post Finding to Merge Request", "category": "GitLab CR", "icon": "$(cloud-upload)" },
-      { "command": "gitlabCr.dismissFinding", "title": "Dismiss Finding", "category": "GitLab CR", "icon": "$(close)" },
-      { "command": "gitlabCr.openThread", "title": "Open Note", "category": "GitLab CR" }
+      {
+        "command": "gitlabCr.refresh",
+        "title": "Refresh CR Notes",
+        "category": "GitLab CR",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gitlabCr.setToken",
+        "title": "Set GitLab Access Token",
+        "category": "GitLab CR",
+        "icon": "$(key)"
+      },
+      {
+        "command": "gitlabCr.openInBrowser",
+        "title": "Open Merge Request in Browser",
+        "category": "GitLab CR",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "gitlabCr.fixAll",
+        "title": "Fix All CR Notes",
+        "category": "GitLab CR",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "gitlabCr.selfReview",
+        "title": "Self Code Review",
+        "category": "GitLab CR",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "gitlabCr.clearSelfReview",
+        "title": "Clear Self Review Findings",
+        "category": "GitLab CR",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "gitlabCr.suggestFix",
+        "title": "Suggest Fix (opencode)",
+        "category": "GitLab CR",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "gitlabCr.applyFix",
+        "title": "Apply Fix",
+        "category": "GitLab CR",
+        "icon": "$(check)"
+      },
+      {
+        "command": "gitlabCr.previewFix",
+        "title": "Preview Fix in Diff Editor",
+        "category": "GitLab CR",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "gitlabCr.applyFromPreview",
+        "title": "Apply Fix",
+        "category": "GitLab CR",
+        "icon": "$(check)"
+      },
+      {
+        "command": "gitlabCr.reply",
+        "title": "Reply",
+        "category": "GitLab CR",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "gitlabCr.suggestReply",
+        "title": "Suggest Reply (opencode)",
+        "category": "GitLab CR",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "gitlabCr.sendDraft",
+        "title": "Send Reply",
+        "category": "GitLab CR",
+        "icon": "$(send)"
+      },
+      {
+        "command": "gitlabCr.editDraft",
+        "title": "Edit Reply",
+        "category": "GitLab CR",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "gitlabCr.discardDraft",
+        "title": "Discard",
+        "category": "GitLab CR",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "gitlabCr.saveDraft",
+        "title": "Save",
+        "category": "GitLab CR"
+      },
+      {
+        "command": "gitlabCr.cancelDraftEdit",
+        "title": "Cancel",
+        "category": "GitLab CR"
+      },
+      {
+        "command": "gitlabCr.toggleResolved",
+        "title": "Resolve / Unresolve",
+        "category": "GitLab CR",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "gitlabCr.postFinding",
+        "title": "Post Finding to Merge Request",
+        "category": "GitLab CR",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "gitlabCr.dismissFinding",
+        "title": "Dismiss Finding",
+        "category": "GitLab CR",
+        "icon": "$(close)"
+      },
+      {
+        "command": "gitlabCr.openThread",
+        "title": "Open Note",
+        "category": "GitLab CR"
+      },
+      {
+        "command": "gitlabCr.writeCommitMessage",
+        "title": "Write Commit Message (opencode)",
+        "category": "GitLab CR",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "gitlabCr.showPipeline",
+        "title": "Show Pipeline Jobs",
+        "category": "GitLab CR",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "gitlabCr.refreshPipeline",
+        "title": "Refresh Pipeline Status",
+        "category": "GitLab CR",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gitlabCr.fixPipeline",
+        "title": "Explain and Fix Failed Job (opencode)",
+        "category": "GitLab CR",
+        "icon": "$(debug)"
+      },
+      {
+        "command": "gitlabCr.openJob",
+        "title": "Open Job Log in Browser",
+        "category": "GitLab CR",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "gitlabCr.clearPipelineFindings",
+        "title": "Clear CI Failure Findings",
+        "category": "GitLab CR"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "gitlabCr.refresh", "when": "view == gitlabCr.threads", "group": "navigation@1" },
-        { "command": "gitlabCr.fixAll", "when": "view == gitlabCr.threads", "group": "navigation@2" },
-        { "command": "gitlabCr.selfReview", "when": "view == gitlabCr.threads", "group": "navigation@3" },
-        { "command": "gitlabCr.openInBrowser", "when": "view == gitlabCr.threads", "group": "navigation@4" },
-        { "command": "gitlabCr.clearSelfReview", "when": "view == gitlabCr.threads", "group": "more@1" },
-        { "command": "gitlabCr.setToken", "when": "view == gitlabCr.threads", "group": "more@2" }
+        {
+          "command": "gitlabCr.refresh",
+          "when": "view == gitlabCr.threads",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gitlabCr.fixAll",
+          "when": "view == gitlabCr.threads",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gitlabCr.selfReview",
+          "when": "view == gitlabCr.threads",
+          "group": "navigation@3"
+        },
+        {
+          "command": "gitlabCr.openInBrowser",
+          "when": "view == gitlabCr.threads",
+          "group": "navigation@4"
+        },
+        {
+          "command": "gitlabCr.clearSelfReview",
+          "when": "view == gitlabCr.threads",
+          "group": "more@1"
+        },
+        {
+          "command": "gitlabCr.setToken",
+          "when": "view == gitlabCr.threads",
+          "group": "more@2"
+        },
+        {
+          "command": "gitlabCr.showPipeline",
+          "when": "view == gitlabCr.threads",
+          "group": "more@0"
+        },
+        {
+          "command": "gitlabCr.clearPipelineFindings",
+          "when": "view == gitlabCr.threads",
+          "group": "more@1"
+        }
       ],
       "view/item/context": [
-        { "command": "gitlabCr.suggestFix", "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFile\\b/", "group": "inline@1" },
-        { "command": "gitlabCr.previewFix", "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFix\\b/", "group": "inline@2" },
-        { "command": "gitlabCr.applyFix", "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFix\\b/", "group": "inline@2" },
-        { "command": "gitlabCr.suggestReply", "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-gitlab\\b/", "group": "inline@3" },
-        { "command": "gitlabCr.reply", "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-gitlab\\b/", "group": "inline@4" },
-        { "command": "gitlabCr.postFinding", "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-self\\b/", "group": "inline@5" },
-        { "command": "gitlabCr.dismissFinding", "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-self\\b/", "group": "inline@6" },
-        { "command": "gitlabCr.toggleResolved", "when": "view == gitlabCr.threads && viewItem =~ /\\bresolvable\\b/", "group": "z@1" }
+        {
+          "command": "gitlabCr.suggestFix",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFile\\b/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabCr.previewFix",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFix\\b/",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitlabCr.applyFix",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bhasFix\\b/",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitlabCr.suggestReply",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-gitlab\\b/",
+          "group": "inline@3"
+        },
+        {
+          "command": "gitlabCr.reply",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-gitlab\\b/",
+          "group": "inline@4"
+        },
+        {
+          "command": "gitlabCr.postFinding",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-self\\b/",
+          "group": "inline@5"
+        },
+        {
+          "command": "gitlabCr.dismissFinding",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-self\\b/",
+          "group": "inline@6"
+        },
+        {
+          "command": "gitlabCr.toggleResolved",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bresolvable\\b/",
+          "group": "z@1"
+        },
+        {
+          "command": "gitlabCr.refreshPipeline",
+          "when": "view == gitlabCr.threads && viewItem == pipeline",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabCr.fixPipeline",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob-failed\\b/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabCr.openJob",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bjob\\b/",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitlabCr.openJob",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-pipeline\\b/",
+          "group": "inline@5"
+        },
+        {
+          "command": "gitlabCr.dismissFinding",
+          "when": "view == gitlabCr.threads && viewItem =~ /\\bsrc-pipeline\\b/",
+          "group": "inline@6"
+        }
       ],
       "comments/commentThread/title": [
-        { "command": "gitlabCr.suggestFix", "when": "commentController == gitlabCr && commentThread =~ /\\bhasFile\\b/", "group": "navigation@1" },
-        { "command": "gitlabCr.applyFix", "when": "commentController == gitlabCr && commentThread =~ /\\bhasFix\\b/", "group": "navigation@2" },
-        { "command": "gitlabCr.suggestReply", "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-gitlab\\b/", "group": "navigation@3" },
-        { "command": "gitlabCr.toggleResolved", "when": "commentController == gitlabCr && commentThread =~ /\\bresolvable\\b/", "group": "navigation@4" },
-        { "command": "gitlabCr.postFinding", "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-self\\b/", "group": "navigation@5" },
-        { "command": "gitlabCr.dismissFinding", "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-self\\b/", "group": "navigation@6" }
+        {
+          "command": "gitlabCr.suggestFix",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bhasFile\\b/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gitlabCr.applyFix",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bhasFix\\b/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gitlabCr.suggestReply",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-gitlab\\b/",
+          "group": "navigation@3"
+        },
+        {
+          "command": "gitlabCr.toggleResolved",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bresolvable\\b/",
+          "group": "navigation@4"
+        },
+        {
+          "command": "gitlabCr.postFinding",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-self\\b/",
+          "group": "navigation@5"
+        },
+        {
+          "command": "gitlabCr.dismissFinding",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-self\\b/",
+          "group": "navigation@6"
+        },
+        {
+          "command": "gitlabCr.openJob",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-pipeline\\b/",
+          "group": "navigation@5"
+        },
+        {
+          "command": "gitlabCr.dismissFinding",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-pipeline\\b/",
+          "group": "navigation@6"
+        }
       ],
       "comments/commentThread/context": [
-        { "command": "gitlabCr.reply", "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-gitlab\\b/", "group": "inline@1" }
+        {
+          "command": "gitlabCr.reply",
+          "when": "commentController == gitlabCr && commentThread =~ /\\bsrc-gitlab\\b/",
+          "group": "inline@1"
+        }
       ],
       "comments/comment/title": [
-        { "command": "gitlabCr.previewFix", "when": "commentController == gitlabCr && comment == suggestion", "group": "inline@0" },
-        { "command": "gitlabCr.applyFix", "when": "commentController == gitlabCr && comment == suggestion", "group": "inline@1" },
-        { "command": "gitlabCr.sendDraft", "when": "commentController == gitlabCr && comment == draft", "group": "inline@1" },
-        { "command": "gitlabCr.editDraft", "when": "commentController == gitlabCr && comment == draft", "group": "inline@2" },
-        { "command": "gitlabCr.discardDraft", "when": "commentController == gitlabCr && comment =~ /^(draft|suggestion)$/", "group": "inline@3" }
+        {
+          "command": "gitlabCr.previewFix",
+          "when": "commentController == gitlabCr && comment == suggestion",
+          "group": "inline@0"
+        },
+        {
+          "command": "gitlabCr.applyFix",
+          "when": "commentController == gitlabCr && comment == suggestion",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabCr.sendDraft",
+          "when": "commentController == gitlabCr && comment == draft",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabCr.editDraft",
+          "when": "commentController == gitlabCr && comment == draft",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitlabCr.discardDraft",
+          "when": "commentController == gitlabCr && comment =~ /^(draft|suggestion)$/",
+          "group": "inline@3"
+        }
       ],
       "comments/comment/context": [
-        { "command": "gitlabCr.saveDraft", "when": "commentController == gitlabCr && comment == draft", "group": "inline@1" },
-        { "command": "gitlabCr.cancelDraftEdit", "when": "commentController == gitlabCr && comment == draft", "group": "inline@2" }
+        {
+          "command": "gitlabCr.saveDraft",
+          "when": "commentController == gitlabCr && comment == draft",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitlabCr.cancelDraftEdit",
+          "when": "commentController == gitlabCr && comment == draft",
+          "group": "inline@2"
+        }
       ],
       "editor/title": [
-        { "command": "gitlabCr.applyFromPreview", "when": "isInDiffEditor && resourceScheme == gitlabcr-preview", "group": "navigation@1" }
+        {
+          "command": "gitlabCr.applyFromPreview",
+          "when": "isInDiffEditor && resourceScheme == gitlabcr-preview",
+          "group": "navigation@1"
+        }
       ],
       "commandPalette": [
-        { "command": "gitlabCr.applyFromPreview", "when": "false" },
-        { "command": "gitlabCr.applyFix", "when": "false" },
-        { "command": "gitlabCr.sendDraft", "when": "false" },
-        { "command": "gitlabCr.editDraft", "when": "false" },
-        { "command": "gitlabCr.discardDraft", "when": "false" },
-        { "command": "gitlabCr.saveDraft", "when": "false" },
-        { "command": "gitlabCr.cancelDraftEdit", "when": "false" },
-        { "command": "gitlabCr.postFinding", "when": "false" },
-        { "command": "gitlabCr.dismissFinding", "when": "false" },
-        { "command": "gitlabCr.openThread", "when": "false" }
+        {
+          "command": "gitlabCr.applyFromPreview",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.applyFix",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.sendDraft",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.editDraft",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.discardDraft",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.saveDraft",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.cancelDraftEdit",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.postFinding",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.dismissFinding",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.openThread",
+          "when": "false"
+        },
+        {
+          "command": "gitlabCr.openJob",
+          "when": "false"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "gitlabCr.writeCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation@1"
+        }
       ]
     }
   },
